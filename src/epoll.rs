@@ -58,3 +58,74 @@ pub struct Event {
     /// file descriptor becomes ready
     data: u32,
 }
+
+/// Performable Operations for Target fd
+///
+/// These are all the valid values for `op` argument of `epoll_ctl`
+///
+/// Add entry to the interest list of the epoll instance
+pub const EPOLL_CTL_ADD: i32 = 1;
+/// Remove the target file descriptor from the interest list
+pub const EPOLL_CTL_DEL: i32 = 2;
+/// Change the settings associated with fd in the interest list
+/// to the new settings specified in event
+// pub const EPOLL_CTL_MOD: i32 = 3;
+
+/// Avaiable event types for Event
+///
+/// File read operations
+pub const EPOLLIN: i32 = 0x1;
+/// File write operations
+// pub const EPOLLOUT: i32 = 0x4;
+/// Stream socket peer closed connection
+pub const EPOLLRDHUP: i32 = 0x2000;
+
+/// Available input flags
+///
+/// Request edge-trigerred notification
+pub const EPOLLET: i32 = 1 << 31;
+
+impl Event {
+    pub fn new(identifier: u32) -> Self {
+        Event {
+            events: 0,
+            data: identifier,
+        }
+    }
+
+    pub fn event_type(&self) -> u32 {
+        self.events
+    }
+
+    pub fn data(&self) -> u32 {
+        self.data
+    }
+
+    pub fn edge_trigerred(self) -> Self {
+        Event {
+            events: self.events | EPOLLET as u32,
+            ..self
+        }
+    }
+
+    pub fn notify_read(self) -> Self {
+        Event {
+            events: self.events | EPOLLIN as u32,
+            ..self
+        }
+    }
+
+    // pub fn notify_write(self) -> Self {
+    //     Event {
+    //         events: self.events | EPOLLOUT as u32,
+    //         ..self
+    //     }
+    // }
+
+    pub fn notify_conn_close(self) -> Self {
+        Event {
+            events: self.events | EPOLLRDHUP as u32,
+            ..self
+        }
+    }
+}
