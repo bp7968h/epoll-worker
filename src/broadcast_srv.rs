@@ -6,9 +6,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use log::{debug, error};
+use log::{debug, error, info};
 
-use crate::epoll_create;
+use crate::{EPOLL_CTL_ADD, Event, epoll_create};
 
 /// Broadcast server instance
 ///
@@ -66,6 +66,31 @@ impl BroadCastSrv {
     /// polls for the notification from kernel
     /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
+        info!("Chat server listening on {}", self.local_addr()?);
+        self.register_server(EPOLL_CTL_ADD, self.epfd, 0)?;
+
+        loop {
+            let mut notified_events = Vec::with_capacity(12);
+            self.poll(&mut notified_events, None)?;
+
+            if notified_events.is_empty() {
+                info!("no events received from epoll");
+                continue;
+            }
+
+            let _ = self.handle_notified_events(&notified_events);
+        }
+    }
+
+    fn handle_notified_events(&mut self, event: &[Event]) -> Result<()> {
+        Ok(())
+    }
+
+    fn poll(&self, events: &mut Vec<Event>, timeout: Option<i32>) -> Result<()> {
+        Ok(())
+    }
+
+    fn register_server(&self, op: i32, fd: i32, identifier: u32) -> Result<()> {
         Ok(())
     }
 }
