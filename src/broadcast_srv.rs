@@ -8,7 +8,7 @@ use std::sync::{
 
 use log::{debug, error, info};
 
-use crate::{EPOLL_CTL_ADD, Event, epoll_create};
+use crate::{EPOLL_CTL_ADD, Event, epoll_create, epoll_ctl, epoll_wait};
 
 /// Broadcast server instance
 ///
@@ -86,11 +86,35 @@ impl BroadCastSrv {
         Ok(())
     }
 
+    /// Poll the epoll instance for any event
     fn poll(&self, events: &mut Vec<Event>, timeout: Option<i32>) -> Result<()> {
+        let epfd = self.epfd;
+        let max_events = events.capacity() as i32;
+        let timeout = timeout.unwrap_or(-1);
+
+        let res = unsafe { epoll_wait(epfd, events.as_mut_ptr(), max_events, timeout) };
+
+        if res < 0 {
+            return Err(Error::last_os_error());
+        }
+
+        unsafe {
+            events.set_len(res as usize);
+        }
+
         Ok(())
     }
 
+    /// Register server's listener with the epoll instance
     fn register_server(&self, op: i32, fd: i32, identifier: u32) -> Result<()> {
+        let mut event = Event::new(identifier).edge_trigerred().notify_read();
+
+        let res = unsafe { epoll_ctl(self.epfd, op, fd, &raw mut event) };
+
+        if res < 0 {
+            return Err(Error::last_os_error());
+        }
+
         Ok(())
     }
 }
