@@ -8,7 +8,7 @@ use std::sync::{
 
 use log::{debug, error, info};
 
-use crate::{EPOLL_CTL_ADD, Event, epoll_create, epoll_ctl, epoll_wait};
+use crate::{EPOLL_CTL_ADD, Event, close, epoll_create, epoll_ctl, epoll_wait};
 
 /// Broadcast server instance
 ///
@@ -116,5 +116,15 @@ impl BroadCastSrv {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for BroadCastSrv {
+    fn drop(&mut self) {
+        let res = unsafe { close(self.epfd) };
+
+        if res < 0 {
+            error!("failed to close epoll instance, {}", Error::last_os_error());
+        }
     }
 }
