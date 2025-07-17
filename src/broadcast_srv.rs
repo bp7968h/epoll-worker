@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Error, Result};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -8,7 +9,7 @@ use std::sync::{
 
 use log::{debug, error, info};
 
-use crate::{EPOLL_CTL_ADD, Event, close, epoll_create, epoll_ctl, epoll_wait};
+use crate::{EPOLL_CTL_ADD, Event, PeerRole, close, epoll_create, epoll_ctl, epoll_wait};
 
 /// Broadcast server instance
 ///
@@ -32,11 +33,11 @@ impl BroadCastSrv {
         let result = unsafe { epoll_create(1) };
 
         if result < 0 {
-            error!("failed to create epoll instance");
+            error!("Failed to create epoll instance");
             return Err(Error::last_os_error());
         }
 
-        debug!("epoll instance created with efd: `{}`", result);
+        debug!("Epoll instance created with efd: `{}`", result);
         Ok(BroadCastSrv {
             listener: listener,
             epfd: result,
@@ -67,14 +68,17 @@ impl BroadCastSrv {
     /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
         info!("Chat server listening on {}", self.local_addr()?);
-        self.register_server(EPOLL_CTL_ADD, self.epfd, 0)?;
+        self.register_peer(EPOLL_CTL_ADD, self.as_raw_fd(), PeerRole::Server)?;
+        debug!("Server registered as entry for interest list in epoll");
 
         loop {
             let mut notified_events = Vec::with_capacity(12);
+            debug!("Waiting for events from epoll...");
             self.poll(&mut notified_events, None)?;
+            debug!("Got {} events from epoll to handle", notified_events.len());
 
             if notified_events.is_empty() {
-                info!("no events received from epoll");
+                debug!("no events received from epoll");
                 continue;
             }
 
@@ -82,7 +86,37 @@ impl BroadCastSrv {
         }
     }
 
-    fn handle_notified_events(&mut self, event: &[Event]) -> Result<()> {
+    fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
+        for event in events {
+            match event.data() {
+                0 => {
+                    // 0 is registered as server always
+                    debug!("Handlling server events");
+                    match self.listener.accept() {
+                        Ok((socket, addr)) => {
+                            info!("new client connection from {}", addr);
+                            socket.set_nonblocking(true)?;
+                            let socket_fd = socket.as_raw_fd();
+                            let identifier = self.next_client_id;
+
+                            self.register_peer(
+                                EPOLL_CTL_ADD,
+                                socket_fd,
+                                PeerRole::Client(identifier),
+                            )?;
+
+                            self.next_client_id += 1;
+                            self.clients.insert(identifier, socket);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                client_id => {
+                    debug!("Handling events for client with ID [{}]", client_id);
+                    // except for 0 other are clinet, as clinet id start at 1
+                }
+            }
+        }
         Ok(())
     }
 
@@ -95,6 +129,7 @@ impl BroadCastSrv {
         let res = unsafe { epoll_wait(epfd, events.as_mut_ptr(), max_events, timeout) };
 
         if res < 0 {
+            debug!("Failed to wait for events from epoll wait");
             return Err(Error::last_os_error());
         }
 
@@ -102,20 +137,37 @@ impl BroadCastSrv {
             events.set_len(res as usize);
         }
 
+        debug!("Successfully got events from epoll wait");
         Ok(())
     }
 
-    /// Register server's listener with the epoll instance
-    fn register_server(&self, op: i32, fd: i32, identifier: u32) -> Result<()> {
-        let mut event = Event::new(identifier).edge_trigerred().notify_read();
+    /// Register peer (server or client) to epoll interest list
+    ///
+    /// Some flags are different while registering to epoll interest list.
+    /// This depends on the type of role you have, which needs to be passed as arguments
+    fn register_peer(&self, op: i32, fd: i32, peer_role: PeerRole) -> Result<()> {
+        let mut event = Event::new(peer_role).edge_trigerred().notify_read();
+
+        if let PeerRole::Client(_) = &peer_role {
+            event = event.notify_conn_close();
+        }
 
         let res = unsafe { epoll_ctl(self.epfd, op, fd, &raw mut event) };
 
         if res < 0 {
+            debug!("Failed to register {:?} to epoll interest list", peer_role);
             return Err(Error::last_os_error());
         }
 
+        debug!(
+            "Successfully registered {:?} to epoll interest list",
+            peer_role
+        );
         Ok(())
+    }
+
+    fn as_raw_fd(&self) -> RawFd {
+        self.listener.as_raw_fd()
     }
 }
 
@@ -126,5 +178,10 @@ impl Drop for BroadCastSrv {
         if res < 0 {
             error!("failed to close epoll instance, {}", Error::last_os_error());
         }
+
+        debug!(
+            "Notified kernel to close the epoll instance with fd {}",
+            self.epfd
+        );
     }
 }

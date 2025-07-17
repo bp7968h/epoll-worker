@@ -1,5 +1,3 @@
-use std::ffi::c_int;
-
 unsafe extern "C" {
     /// Creates new epoll instance
     ///
@@ -11,7 +9,7 @@ unsafe extern "C" {
     ///
     /// The file descriptor of the epoll instance or `-1` if there is any error
     /// and the error is set to `errno` which is basically the `last_os_error`
-    pub fn epoll_create(size: c_int) -> i32;
+    pub fn epoll_create(size: i32) -> i32;
 
     /// Closes a file descriptor
     ///
@@ -21,7 +19,7 @@ unsafe extern "C" {
     /// # Returns
     ///
     /// `0` on success and `-1` on error
-    pub fn close(fd: c_int) -> i32;
+    pub fn close(fd: i32) -> i32;
 
     /// Add, modify or remove entries in interest list of epoll instance
     ///
@@ -31,7 +29,7 @@ unsafe extern "C" {
     /// * `op` - operation to be performed for target file descriptor
     /// * `fd` - target file descriptor
     /// * `event` -
-    pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut Event) -> c_int;
+    pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut Event) -> i32;
 
     /// Wait for events on epoll instance
     ///
@@ -41,7 +39,26 @@ unsafe extern "C" {
     /// * `events` - buffer to fill the returned events notification
     /// * `max_events` - number of max events to be filled, must be greater than zero
     /// * `timeouot` - number of milliseconds that `epoll_wait` will block
-    pub fn epoll_wait(epfd: c_int, events: *mut Event, max_events: c_int, timeout: c_int) -> c_int;
+    pub fn epoll_wait(epfd: i32, events: *mut Event, max_events: i32, timeout: i32) -> i32;
+}
+
+/// Represents either server or client
+///
+/// This helps us to register to epoll
+/// and also to identify whose events we are operating on
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum PeerRole {
+    Server,
+    Client(u32),
+}
+
+impl From<PeerRole> for u32 {
+    fn from(value: PeerRole) -> Self {
+        match value {
+            PeerRole::Server => 0,
+            PeerRole::Client(id) => id,
+        }
+    }
 }
 
 /// Corresponds to Linux's `epoll_event`
@@ -86,10 +103,10 @@ pub const EPOLLRDHUP: i32 = 0x2000;
 pub const EPOLLET: i32 = 1 << 31;
 
 impl Event {
-    pub fn new(identifier: u32) -> Self {
+    pub fn new(identifier: PeerRole) -> Self {
         Event {
             events: 0,
-            data: identifier,
+            data: identifier.into(),
         }
     }
 
