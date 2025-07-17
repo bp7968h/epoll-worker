@@ -9,7 +9,7 @@ use std::sync::{
 
 use log::{debug, error, info};
 
-use crate::{EPOLL_CTL_ADD, Event, PeerRole, close, epoll_create, epoll_ctl, epoll_wait};
+use crate::{Event, Operation, PeerRole, close, epoll_create, epoll_ctl, epoll_wait};
 
 /// Broadcast server instance
 ///
@@ -68,7 +68,7 @@ impl BroadCastSrv {
     /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
         info!("Chat server listening on {}", self.local_addr()?);
-        self.register_peer(EPOLL_CTL_ADD, self.as_raw_fd(), PeerRole::Server)?;
+        self.register_peer(Operation::ADD, self.as_raw_fd(), PeerRole::Server)?;
         debug!("Server registered as entry for interest list in epoll");
 
         loop {
@@ -88,8 +88,8 @@ impl BroadCastSrv {
 
     fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
         for event in events {
-            match event.data() {
-                0 => {
+            match event.role() {
+                PeerRole::Server => {
                     // 0 is registered as server always
                     debug!("Handlling server events");
                     match self.listener.accept() {
@@ -100,7 +100,7 @@ impl BroadCastSrv {
                             let identifier = self.next_client_id;
 
                             self.register_peer(
-                                EPOLL_CTL_ADD,
+                                Operation::ADD,
                                 socket_fd,
                                 PeerRole::Client(identifier),
                             )?;
@@ -111,7 +111,7 @@ impl BroadCastSrv {
                         Err(e) => return Err(e),
                     }
                 }
-                client_id => {
+                PeerRole::Client(client_id) => {
                     debug!("Handling events for client with ID [{}]", client_id);
                     // except for 0 other are clinet, as clinet id start at 1
                 }
@@ -145,14 +145,14 @@ impl BroadCastSrv {
     ///
     /// Some flags are different while registering to epoll interest list.
     /// This depends on the type of role you have, which needs to be passed as arguments
-    fn register_peer(&self, op: i32, fd: i32, peer_role: PeerRole) -> Result<()> {
+    fn register_peer(&self, op: Operation, fd: i32, peer_role: PeerRole) -> Result<()> {
         let mut event = Event::new(peer_role).edge_trigerred().notify_read();
 
         if let PeerRole::Client(_) = &peer_role {
             event = event.notify_conn_close();
         }
 
-        let res = unsafe { epoll_ctl(self.epfd, op, fd, &raw mut event) };
+        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
 
         if res < 0 {
             debug!("Failed to register {:?} to epoll interest list", peer_role);

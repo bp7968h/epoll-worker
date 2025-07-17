@@ -52,6 +52,15 @@ pub enum PeerRole {
     Client(u32),
 }
 
+impl From<u32> for PeerRole {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => PeerRole::Server,
+            others => PeerRole::Client(others),
+        }
+    }
+}
+
 impl From<PeerRole> for u32 {
     fn from(value: PeerRole) -> Self {
         match value {
@@ -59,6 +68,56 @@ impl From<PeerRole> for u32 {
             PeerRole::Client(id) => id,
         }
     }
+}
+
+/// Performable Operations for Target fd
+///
+/// These are all the valid values for `op` argument of `epoll_ctl`
+/// Where;
+///     ADD = EPOLL_CTL_ADD
+///     DEL = EPOLL_CTL_DEL
+///     MOD = EPOLL_CTL_MOD
+pub enum Operation {
+    /// Add entry to the interest list of the epoll instance
+    ADD,
+    /// Remove the target file descriptor from the interest list
+    DEL,
+    /// Change the settings associated with fd in the interest list
+    /// to the new settings specified in event
+    MOD,
+}
+
+impl From<Operation> for i32 {
+    fn from(value: Operation) -> Self {
+        match value {
+            Operation::ADD => 1,
+            Operation::DEL => 2,
+            Operation::MOD => 3,
+        }
+    }
+}
+
+/// Avalilable event types and input for `Event`
+///
+/// These variants are used to bitmask the `event` filed in `Event`
+#[repr(i32)]
+pub enum EventType {
+    /// Read operation
+    EPOLLIN = 0x1,
+    /// Write operation
+    EPOLLOUT = 0x4,
+    /// Stream socket peer closed connection or shut down
+    EPOLLRDHUP = 0x2000,
+    /// Exceptional condition
+    EPOLLPRI = 0x2,
+    /// Error condition
+    EPOLLERR = 0x8,
+    /// Hang up happened on associated fd
+    EPOLLHUP = 0x10,
+    /// Request edge-trigerred notification
+    EPOLLET = 1 << 31,
+    /// Request one-shot notification
+    EPOLLONESHOT = 1 << 30,
 }
 
 /// Corresponds to Linux's `epoll_event`
@@ -76,32 +135,6 @@ pub struct Event {
     data: u32,
 }
 
-/// Performable Operations for Target fd
-///
-/// These are all the valid values for `op` argument of `epoll_ctl`
-///
-/// Add entry to the interest list of the epoll instance
-pub const EPOLL_CTL_ADD: i32 = 1;
-/// Remove the target file descriptor from the interest list
-pub const EPOLL_CTL_DEL: i32 = 2;
-/// Change the settings associated with fd in the interest list
-/// to the new settings specified in event
-// pub const EPOLL_CTL_MOD: i32 = 3;
-
-/// Avaiable event types for Event
-///
-/// File read operations
-pub const EPOLLIN: i32 = 0x1;
-/// File write operations
-// pub const EPOLLOUT: i32 = 0x4;
-/// Stream socket peer closed connection
-pub const EPOLLRDHUP: i32 = 0x2000;
-
-/// Available input flags
-///
-/// Request edge-trigerred notification
-pub const EPOLLET: i32 = 1 << 31;
-
 impl Event {
     pub fn new(identifier: PeerRole) -> Self {
         Event {
@@ -114,34 +147,38 @@ impl Event {
         self.events
     }
 
+    pub fn role(&self) -> PeerRole {
+        PeerRole::from(self.data)
+    }
+
     pub fn data(&self) -> u32 {
         self.data
     }
 
     pub fn edge_trigerred(self) -> Self {
         Event {
-            events: self.events | EPOLLET as u32,
+            events: self.events | EventType::EPOLLET as u32,
             ..self
         }
     }
 
     pub fn notify_read(self) -> Self {
         Event {
-            events: self.events | EPOLLIN as u32,
+            events: self.events | EventType::EPOLLIN as u32,
             ..self
         }
     }
 
     // pub fn notify_write(self) -> Self {
     //     Event {
-    //         events: self.events | EPOLLOUT as u32,
+    //         events: self.events | EventType::EPOLLOUT as u32,
     //         ..self
     //     }
     // }
 
     pub fn notify_conn_close(self) -> Self {
         Event {
-            events: self.events | EPOLLRDHUP as u32,
+            events: self.events | EventType::EPOLLRDHUP as u32,
             ..self
         }
     }
