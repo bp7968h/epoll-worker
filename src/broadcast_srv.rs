@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Error, Result};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{
@@ -67,11 +67,11 @@ impl BroadCastSrv {
     /// polls for the notification from kernel
     /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
-        info!("Chat server listening on {}", self.local_addr()?);
+        println!("Broadcast server listening on {}", self.local_addr()?);
         self.register_peer(Operation::ADD, self.as_raw_fd(), PeerRole::Server)?;
         debug!("Server registered as entry for interest list in epoll");
 
-        loop {
+        while !self.shutdown_signal.load(Ordering::Relaxed) {
             let mut notified_events = Vec::with_capacity(12);
             debug!("Waiting for events from epoll...");
             self.poll(&mut notified_events, None)?;
@@ -84,13 +84,15 @@ impl BroadCastSrv {
 
             let _ = self.handle_notified_events(&notified_events);
         }
+
+        info!("Server shutting down gracefully");
+        Ok(())
     }
 
     fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
         for event in events {
             match event.role() {
                 PeerRole::Server => {
-                    // 0 is registered as server always
                     debug!("Handlling server events");
                     match self.listener.accept() {
                         Ok((socket, addr)) => {
@@ -113,7 +115,84 @@ impl BroadCastSrv {
                 }
                 PeerRole::Client(client_id) => {
                     debug!("Handling events for client with ID [{}]", client_id);
-                    // except for 0 other are clinet, as clinet id start at 1
+                    match event.event_type() {
+                        0x1 => {
+                            // read event -> broadcast to all client
+                            let mut accumulated_data = Vec::new();
+                            if let Some(client_soc) = self.clients.get_mut(&client_id) {
+                                let mut buffer = vec![0u8; 4096];
+                                loop {
+                                    match client_soc.read(&mut buffer) {
+                                        Ok(n) if n == 0 => {
+                                            debug!(
+                                                "Read 0 bytes - connection closed or no more data"
+                                            );
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            debug!("Read {} bytes", n);
+                                            accumulated_data.extend_from_slice(&buffer[..n]);
+                                        }
+                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                            debug!("WouldBlock - no more data available");
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            error!("Read error: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                            }
+                            // at this stage we read all data and stored in buffer
+                            // now broadcast to all except the one we received from
+                            let formatted_message = format!(
+                                "[Client_{}] {}",
+                                client_id,
+                                String::from_utf8_lossy(&accumulated_data)
+                            );
+                            info!("{}", formatted_message);
+                            if self.clients.len() > 1 {
+                                for (id, stream) in self.clients.iter_mut() {
+                                    if *id != client_id {
+                                        match stream.write(formatted_message.as_bytes()) {
+                                            Ok(size) => {
+                                                info!(
+                                                    "{} bytes sent from client {} to {}",
+                                                    size, client_id, id
+                                                );
+                                            }
+                                            Err(_) => {
+                                                error!("failed to send data to client: {}", id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        0x2000 => {
+                            // disconnect event
+                            if let Some(client_socket) = self.clients.remove(&client_id) {
+                                let fd = client_socket.as_raw_fd();
+                                self.deregister_client(Operation::DEL, fd, client_id)?;
+                            }
+                        }
+                        others => {
+                            error!(
+                                "received unknown events in clinet socket id: {}, event_type: {}",
+                                client_id, others
+                            );
+                            if let Some(client_socket) = self.clients.remove(&client_id) {
+                                let fd = client_socket.as_raw_fd();
+                                self.deregister_client(Operation::DEL, fd, client_id)?;
+                                info!(
+                                    "client {} with address {:?} disconnected",
+                                    client_id,
+                                    client_socket.local_addr().unwrap()
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -163,6 +242,22 @@ impl BroadCastSrv {
             "Successfully registered {:?} to epoll interest list",
             peer_role
         );
+        Ok(())
+    }
+
+    /// Register client's socket with the epoll instance
+    fn deregister_client(&self, op: Operation, fd: i32, client_id: u32) -> Result<()> {
+        let mut event = Event::new(PeerRole::Client(client_id))
+            .edge_trigerred()
+            .notify_read()
+            .notify_conn_close();
+
+        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
+
+        if res < 0 {
+            return Err(Error::last_os_error());
+        }
+
         Ok(())
     }
 
