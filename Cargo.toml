@@ -7,3 +7,7 @@ default-run = "epoll-broadcaster"
 [dependencies]
 env_logger = "0.11.8"
 log = "0.4.27"
+
+[[bin]]
+name = "client"
+path = "src/bin/client.rs"
