@@ -87,107 +87,100 @@ impl BroadCastSrv {
     fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
         for event in events {
             match event.role() {
-                PeerRole::Server => {
-                    debug!("Handlling server events");
-                    match self.listener.accept() {
-                        Ok((socket, addr)) => {
-                            info!("new client connection from {}", addr);
-                            socket.set_nonblocking(true)?;
-                            let socket_fd = socket.as_raw_fd();
-                            let identifier = self.next_client_id;
-
-                            self.register_peer(
-                                Operation::Add,
-                                socket_fd,
-                                PeerRole::Client(identifier),
-                            )?;
-
-                            self.next_client_id += 1;
-                            self.clients.insert(identifier, socket);
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
+                PeerRole::Server => self.accept_new_client()?,
                 PeerRole::Client(client_id) => {
                     debug!("Handling events for client with ID [{}]", client_id);
                     match event.event_type() {
-                        0x1 => {
-                            // read event -> broadcast to all client
-                            let mut accumulated_data = Vec::new();
-                            if let Some(client_soc) = self.clients.get_mut(&client_id) {
-                                let mut buffer = vec![0u8; 4096];
-                                loop {
-                                    match client_soc.read(&mut buffer) {
-                                        Ok(0) => {
-                                            debug!(
-                                                "Read 0 bytes - connection closed or no more data"
-                                            );
-                                            break;
-                                        }
-                                        Ok(n) => {
-                                            debug!("Read {} bytes", n);
-                                            accumulated_data.extend_from_slice(&buffer[..n]);
-                                        }
-                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                            debug!("WouldBlock - no more data available");
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            error!("Read error: {}", e);
-                                            return Err(e);
-                                        }
-                                    }
-                                }
-                            }
-                            // at this stage we read all data and stored in buffer
-                            // now broadcast to all except the one we received from
-                            let formatted_message =
-                                Self::format_message(client_id, &accumulated_data);
-                            debug!("{}", formatted_message);
-                            if self.clients.len() > 1 {
-                                for (id, stream) in self.clients.iter_mut() {
-                                    if *id != client_id {
-                                        match stream.write(formatted_message.as_bytes()) {
-                                            Ok(size) => {
-                                                info!(
-                                                    "{} bytes sent from client {} to {}",
-                                                    size, client_id, id
-                                                );
-                                            }
-                                            Err(_) => {
-                                                error!("failed to send data to client: {}", id);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        0x2000 => {
-                            // disconnect event
-                            if let Some(client_socket) = self.clients.remove(&client_id) {
-                                let fd = client_socket.as_raw_fd();
-                                self.deregister_client(Operation::Del, fd, client_id)?;
-                            }
-                        }
+                        0x1 => self.handle_client_message(client_id)?,
+                        0x2000 => self.handle_client_disconnection(client_id)?,
                         others => {
                             error!(
                                 "received unknown events in clinet socket id: {}, event_type: {}",
                                 client_id, others
                             );
-                            if let Some(client_socket) = self.clients.remove(&client_id) {
-                                let fd = client_socket.as_raw_fd();
-                                self.deregister_client(Operation::Del, fd, client_id)?;
-                                info!(
-                                    "client {} with address {:?} disconnected",
-                                    client_id,
-                                    client_socket.local_addr().unwrap()
-                                );
-                            }
+                            self.handle_client_disconnection(client_id)?
                         }
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    fn accept_new_client(&mut self) -> Result<()> {
+        debug!("Handlling server events");
+        let (socket, addr) = self.listener.accept()?;
+        info!("new client connection from {}", addr);
+
+        socket.set_nonblocking(true)?;
+        let socket_fd = socket.as_raw_fd();
+        let identifier = self.next_client_id;
+        self.register_peer(Operation::Add, socket_fd, PeerRole::Client(identifier))?;
+
+        self.next_client_id += 1;
+        self.clients.insert(identifier, socket);
+        Ok(())
+    }
+
+    fn handle_client_message(&mut self, client_id: u32) -> Result<()> {
+        // read event -> broadcast to all client
+        let mut accumulated_data = Vec::new();
+        if let Some(client_soc) = self.clients.get_mut(&client_id) {
+            let mut buffer = vec![0u8; 4096];
+            loop {
+                match client_soc.read(&mut buffer) {
+                    Ok(0) => {
+                        debug!("Read 0 bytes - connection closed or no more data");
+                        break;
+                    }
+                    Ok(n) => {
+                        debug!("Read {} bytes", n);
+                        accumulated_data.extend_from_slice(&buffer[..n]);
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        debug!("WouldBlock - no more data available");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Read error: {}", e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        // at this stage we read all data and stored in buffer
+        // now broadcast to all except the one we received from
+        let formatted_message = Self::format_message(client_id, &accumulated_data);
+        debug!("{}", formatted_message);
+        if self.clients.len() > 1 {
+            for (id, stream) in self.clients.iter_mut() {
+                if *id != client_id {
+                    match stream.write(formatted_message.as_bytes()) {
+                        Ok(size) => {
+                            info!("{} bytes sent from client {} to {}", size, client_id, id);
+                        }
+                        Err(_) => {
+                            error!("failed to send data to client: {}", id);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_client_disconnection(&mut self, client_id: u32) -> Result<()> {
+        if let Some(client_socket) = self.clients.remove(&client_id) {
+            let fd = client_socket.as_raw_fd();
+            self.deregister_client(Operation::Del, fd, client_id)?;
+            info!(
+                "client {} with address {:?} disconnected",
+                client_id,
+                client_socket.local_addr().unwrap()
+            );
+        }
+
         Ok(())
     }
 
