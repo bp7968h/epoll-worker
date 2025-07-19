@@ -39,7 +39,7 @@ impl BroadCastSrv {
 
         debug!("Epoll instance created with efd: `{}`", result);
         Ok(BroadCastSrv {
-            listener: listener,
+            listener,
             epfd: result,
             next_client_id: 1,
             clients: HashMap::new(),
@@ -49,11 +49,6 @@ impl BroadCastSrv {
 
     pub fn shutdown_signal(&self) -> Arc<AtomicBool> {
         self.shutdown_signal.clone()
-    }
-
-    /// Shutdown instance of BroadCastSrv
-    fn shutdown(&self) {
-        self.shutdown_signal.store(true, Ordering::Relaxed);
     }
 
     /// Returns the local addres the server is binded to
@@ -68,7 +63,7 @@ impl BroadCastSrv {
     /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
         println!("Broadcast server listening on {}", self.local_addr()?);
-        self.register_peer(Operation::ADD, self.as_raw_fd(), PeerRole::Server)?;
+        self.register_peer(Operation::Add, self.as_raw_fd(), PeerRole::Server)?;
         debug!("Server registered as entry for interest list in epoll");
 
         while !self.shutdown_signal.load(Ordering::Relaxed) {
@@ -102,7 +97,7 @@ impl BroadCastSrv {
                             let identifier = self.next_client_id;
 
                             self.register_peer(
-                                Operation::ADD,
+                                Operation::Add,
                                 socket_fd,
                                 PeerRole::Client(identifier),
                             )?;
@@ -123,7 +118,7 @@ impl BroadCastSrv {
                                 let mut buffer = vec![0u8; 4096];
                                 loop {
                                     match client_soc.read(&mut buffer) {
-                                        Ok(n) if n == 0 => {
+                                        Ok(0) => {
                                             debug!(
                                                 "Read 0 bytes - connection closed or no more data"
                                             );
@@ -146,12 +141,9 @@ impl BroadCastSrv {
                             }
                             // at this stage we read all data and stored in buffer
                             // now broadcast to all except the one we received from
-                            let formatted_message = format!(
-                                "[Client_{}] {}",
-                                client_id,
-                                String::from_utf8_lossy(&accumulated_data)
-                            );
-                            info!("{}", formatted_message);
+                            let formatted_message =
+                                Self::format_message(client_id, &accumulated_data);
+                            debug!("{}", formatted_message);
                             if self.clients.len() > 1 {
                                 for (id, stream) in self.clients.iter_mut() {
                                     if *id != client_id {
@@ -174,7 +166,7 @@ impl BroadCastSrv {
                             // disconnect event
                             if let Some(client_socket) = self.clients.remove(&client_id) {
                                 let fd = client_socket.as_raw_fd();
-                                self.deregister_client(Operation::DEL, fd, client_id)?;
+                                self.deregister_client(Operation::Del, fd, client_id)?;
                             }
                         }
                         others => {
@@ -184,7 +176,7 @@ impl BroadCastSrv {
                             );
                             if let Some(client_socket) = self.clients.remove(&client_id) {
                                 let fd = client_socket.as_raw_fd();
-                                self.deregister_client(Operation::DEL, fd, client_id)?;
+                                self.deregister_client(Operation::Del, fd, client_id)?;
                                 info!(
                                     "client {} with address {:?} disconnected",
                                     client_id,
@@ -261,6 +253,10 @@ impl BroadCastSrv {
         Ok(())
     }
 
+    fn format_message(client_id: u32, data: &[u8]) -> String {
+        format!("[Client_{}] {}", client_id, String::from_utf8_lossy(data))
+    }
+
     fn as_raw_fd(&self) -> RawFd {
         self.listener.as_raw_fd()
     }
@@ -278,5 +274,43 @@ impl Drop for BroadCastSrv {
             "Notified kernel to close the epoll instance with fd {}",
             self.epfd
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_message_formatting() {
+        let message = BroadCastSrv::format_message(42, b"Hello World");
+        assert_eq!(message, "[Client_42] Hello World");
+    }
+
+    #[test]
+    fn test_message_formatting_with_unicode() {
+        let message = BroadCastSrv::format_message(1, "Hello 🦀".as_bytes());
+        assert_eq!(message, "[Client_1] Hello 🦀");
+    }
+
+    #[test]
+    fn test_server_creation_with_valid_address() {
+        let server = BroadCastSrv::new("127.0.0.1:0");
+        assert!(server.is_ok());
+    }
+
+    #[test]
+    fn test_server_creation_with_invalid_address() {
+        let server = BroadCastSrv::new("999.999.999.999:999999");
+        assert!(server.is_err());
+    }
+
+    #[test]
+    fn test_server_creation_with_used_port() {
+        let _listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = _listener.local_addr().unwrap();
+
+        let server = BroadCastSrv::new(addr);
+        assert!(server.is_err());
     }
 }

@@ -79,20 +79,20 @@ impl From<PeerRole> for u32 {
 ///     MOD = EPOLL_CTL_MOD
 pub enum Operation {
     /// Add entry to the interest list of the epoll instance
-    ADD,
+    Add,
     /// Remove the target file descriptor from the interest list
-    DEL,
+    Del,
     /// Change the settings associated with fd in the interest list
     /// to the new settings specified in event
-    MOD,
+    Mod,
 }
 
 impl From<Operation> for i32 {
     fn from(value: Operation) -> Self {
         match value {
-            Operation::ADD => 1,
-            Operation::DEL => 2,
-            Operation::MOD => 3,
+            Operation::Add => 1,
+            Operation::Del => 2,
+            Operation::Mod => 3,
         }
     }
 }
@@ -100,24 +100,25 @@ impl From<Operation> for i32 {
 /// Avalilable event types and input for `Event`
 ///
 /// These variants are used to bitmask the `event` filed in `Event`
+#[allow(dead_code)]
 #[repr(i32)]
 pub enum EventType {
     /// Read operation
-    EPOLLIN = 0x1,
+    Epollin = 0x1,
     /// Write operation
-    EPOLLOUT = 0x4,
+    Epollout = 0x4,
     /// Stream socket peer closed connection or shut down
-    EPOLLRDHUP = 0x2000,
+    Epollrdhup = 0x2000,
     /// Exceptional condition
-    EPOLLPRI = 0x2,
+    Epollpri = 0x2,
     /// Error condition
-    EPOLLERR = 0x8,
+    Epollerr = 0x8,
     /// Hang up happened on associated fd
-    EPOLLHUP = 0x10,
+    Epollhup = 0x10,
     /// Request edge-trigerred notification
-    EPOLLET = 1 << 31,
+    Epollet = 1 << 31,
     /// Request one-shot notification
-    EPOLLONESHOT = 1 << 30,
+    Epolloneshot = 1 << 30,
 }
 
 /// Corresponds to Linux's `epoll_event`
@@ -135,6 +136,7 @@ pub struct Event {
     data: u32,
 }
 
+#[allow(dead_code)]
 impl Event {
     pub fn new(identifier: PeerRole) -> Self {
         Event {
@@ -157,14 +159,14 @@ impl Event {
 
     pub fn edge_trigerred(self) -> Self {
         Event {
-            events: self.events | EventType::EPOLLET as u32,
+            events: self.events | EventType::Epollet as u32,
             ..self
         }
     }
 
     pub fn notify_read(self) -> Self {
         Event {
-            events: self.events | EventType::EPOLLIN as u32,
+            events: self.events | EventType::Epollin as u32,
             ..self
         }
     }
@@ -178,8 +180,55 @@ impl Event {
 
     pub fn notify_conn_close(self) -> Self {
         Event {
-            events: self.events | EventType::EPOLLRDHUP as u32,
+            events: self.events | EventType::Epollrdhup as u32,
             ..self
         }
+    }
+}
+
+// In src/epoll.rs - add a test module
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_event_creation() {
+        let event = Event::new(PeerRole::Server);
+        assert_eq!(event.role(), PeerRole::Server);
+        assert_eq!(event.data(), 0);
+        assert_eq!(event.event_type(), 0); // No flags set initially
+    }
+
+    #[test]
+    fn test_event_builder_pattern() {
+        let event = Event::new(PeerRole::Client(5))
+            .edge_trigerred()
+            .notify_read()
+            .notify_conn_close();
+
+        assert_eq!(event.role(), PeerRole::Client(5));
+        assert_eq!(event.data(), 5);
+
+        // Test that all flags are set correctly
+        let events = event.event_type();
+        assert!(events & (EventType::Epollet as u32) != 0);
+        assert!(events & (EventType::Epollin as u32) != 0);
+        assert!(events & (EventType::Epollrdhup as u32) != 0);
+    }
+
+    #[test]
+    fn test_peer_role_conversions() {
+        assert_eq!(PeerRole::from(0), PeerRole::Server);
+        assert_eq!(PeerRole::from(42), PeerRole::Client(42));
+
+        assert_eq!(u32::from(PeerRole::Server), 0);
+        assert_eq!(u32::from(PeerRole::Client(123)), 123);
+    }
+
+    #[test]
+    fn test_operation_conversions() {
+        assert_eq!(i32::from(Operation::Add), 1);
+        assert_eq!(i32::from(Operation::Del), 2);
+        assert_eq!(i32::from(Operation::Mod), 3);
     }
 }
