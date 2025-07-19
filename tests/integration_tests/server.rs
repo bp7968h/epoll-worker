@@ -5,21 +5,18 @@ use std::{
     time::Duration,
 };
 
-use epoll_broadcaster::BroadCastSrv;
+use crate::common::{create_clients, start_test_server};
 
 #[test]
 fn test_server_accept_connection() {
-    let mut server = BroadCastSrv::new("127.0.0.1:0").unwrap();
-    let server_addr = server.local_addr().unwrap();
-
-    let shutdown_signal = server.shutdown_signal();
+    let (mut server, addr, shutdown_signal) = start_test_server();
     thread::spawn(move || {
         server.run().unwrap();
     });
 
     thread::sleep(Duration::from_millis(100));
 
-    let stream = TcpStream::connect(server_addr);
+    let stream = TcpStream::connect(addr);
     assert!(stream.is_ok(), "Should be able to connect to server");
 
     shutdown_signal.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -27,25 +24,22 @@ fn test_server_accept_connection() {
 
 #[test]
 fn test_message_broadcasting() {
-    let mut server = BroadCastSrv::new("127.0.0.1:0").unwrap();
-    let server_addr = server.local_addr().unwrap();
+    let (mut server, addr, shutdown_signal) = start_test_server();
 
-    let shutdown_signal = server.shutdown_signal();
     thread::spawn(move || {
         server.run().unwrap();
     });
 
     thread::sleep(Duration::from_millis(100));
 
-    let mut client1 = TcpStream::connect(server_addr).unwrap();
-    let mut client2 = TcpStream::connect(server_addr).unwrap();
+    let mut clients = create_clients(addr, 2);
     thread::sleep(Duration::from_millis(100));
 
-    client1.write_all(b"Hello from client 1\n").unwrap();
+    clients[0].write_all(b"Hello from client 1\n").unwrap();
     thread::sleep(Duration::from_millis(100));
 
     let mut buffer = [0; 1024];
-    let n = client2.read(&mut buffer).unwrap();
+    let n = clients[1].read(&mut buffer).unwrap();
     let received = String::from_utf8_lossy(&buffer[..n]);
 
     assert!(

@@ -74,7 +74,7 @@ impl BroadCastSrv {
         while !self.shutdown_signal.load(Ordering::Relaxed) {
             let mut notified_events = Vec::with_capacity(12);
             debug!("Waiting for events from epoll...");
-            self.poll(&mut notified_events, None)?;
+            self.poll(&mut notified_events, Some(1000))?;
             debug!("Got {} events from epoll to handle", notified_events.len());
 
             if notified_events.is_empty() {
