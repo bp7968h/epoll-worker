@@ -1,7 +1,7 @@
 //! Real-time chat server that broadcasts messages to all connected clients
 //!
 //! Usage: RUST_LOG=info cargo run --example broadcast_server
-//! Connect with: telnet localhost 8080
+//! Connect with: <telnet localhost 8080> or <client provided in example>
 
 use env_logger;
 use epoll_worker::{EpollServer, EventHandler, HandlerAction};
