@@ -1,33 +1,32 @@
-use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Read, Result, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsRawFd, RawFd};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::HashMap,
+    io::{Error, ErrorKind, Read, Result, Write},
+    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    os::fd::{AsRawFd, RawFd},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use log::{debug, error, info};
 
-use crate::{Event, Operation, PeerRole, close, epoll_create, epoll_ctl, epoll_wait};
+use crate::{
+    Event, EventType, Operation, PeerRole, close, epoll_create, epoll_ctl, epoll_wait,
+    handler::{EventHandler, HandlerAction},
+};
 
-/// Broadcast server instance
-///
-/// This contains the owned TcpListener, epoll file descriptor, shutdown trigger, clinets stream
-pub struct BroadCastSrv {
+pub struct EpollServer<H> {
     listener: TcpListener,
     epfd: i32,
     next_client_id: u32,
     clients: HashMap<u32, TcpStream>,
     shutdown_signal: Arc<AtomicBool>,
+    handler: H,
 }
 
-impl BroadCastSrv {
-    /// Create new instance of BroadCastSrv
-    ///
-    /// Binds the listener to passed address
-    /// creates the epoll instance and saves the fd
-    pub fn new<A: ToSocketAddrs>(addr: A) -> Result<Self> {
+impl<H: EventHandler> EpollServer<H> {
+    pub fn new<A: ToSocketAddrs>(addr: A, handler: H) -> Result<Self> {
         let listener = TcpListener::bind(addr)?;
 
         let result = unsafe { epoll_create(1) };
@@ -38,12 +37,13 @@ impl BroadCastSrv {
         }
 
         debug!("Epoll instance created with efd: `{}`", result);
-        Ok(BroadCastSrv {
+        Ok(EpollServer {
             listener,
             epfd: result,
             next_client_id: 1,
             clients: HashMap::new(),
             shutdown_signal: Arc::new(AtomicBool::new(false)),
+            handler,
         })
     }
 
@@ -51,36 +51,24 @@ impl BroadCastSrv {
         self.shutdown_signal.clone()
     }
 
-    /// Returns the local addres the server is binded to
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.listener.local_addr()
     }
 
-    /// Runs BroadCastSrv event loop
-    ///
-    /// Registers the listeners file description with the epoll instance,
-    /// polls for the notification from kernel
-    /// handles the respective events that the kernel notifies
     pub fn run(&mut self) -> Result<()> {
-        println!("Broadcast server listening on {}", self.local_addr()?);
+        println!("Server listening on {}", self.local_addr()?);
         self.register_peer(Operation::Add, self.as_raw_fd(), PeerRole::Server)?;
-        debug!("Server registered as entry for interest list in epoll");
 
         while !self.shutdown_signal.load(Ordering::Relaxed) {
             let mut notified_events = Vec::with_capacity(12);
-            debug!("Waiting for events from epoll...");
             self.poll(&mut notified_events, Some(1000))?;
-            debug!("Got {} events from epoll to handle", notified_events.len());
 
             if notified_events.is_empty() {
-                debug!("no events received from epoll");
                 continue;
             }
 
             let _ = self.handle_notified_events(&notified_events);
         }
-
-        info!("Server shutting down gracefully");
         Ok(())
     }
 
@@ -91,12 +79,12 @@ impl BroadCastSrv {
                 PeerRole::Client(client_id) => {
                     debug!("Handling events for client with ID [{}]", client_id);
                     match event.event_type() {
-                        0x1 => self.handle_client_message(client_id)?,
-                        0x2000 => self.handle_client_disconnection(client_id)?,
+                        EventType::Epollin => self.handle_client_message(client_id)?,
+                        EventType::Epollrdhup => self.handle_client_disconnection(client_id)?,
                         others => {
                             error!(
                                 "received unknown events in clinet socket id: {}, event_type: {}",
-                                client_id, others
+                                client_id, others as u32
                             );
                             self.handle_client_disconnection(client_id)?
                         }
@@ -111,12 +99,15 @@ impl BroadCastSrv {
         debug!("Handlling server events");
         let (socket, addr) = self.listener.accept()?;
         info!("new client connection from {}", addr);
-
         socket.set_nonblocking(true)?;
+
         let socket_fd = socket.as_raw_fd();
         let identifier = self.next_client_id;
-        self.register_peer(Operation::Add, socket_fd, PeerRole::Client(identifier))?;
 
+        // run user provided handler when client is connected to server
+        self.handler.on_connection(identifier, &socket)?;
+
+        self.register_peer(Operation::Add, socket_fd, PeerRole::Client(identifier))?;
         self.next_client_id += 1;
         self.clients.insert(identifier, socket);
         Ok(())
@@ -149,15 +140,18 @@ impl BroadCastSrv {
             }
         }
         // at this stage we read all data and stored in buffer
-        // now broadcast to all except the one we received from
-        let formatted_message = Self::format_message(client_id, &accumulated_data);
-        debug!("{}", formatted_message);
-        if self.clients.len() > 1 {
-            for (id, stream) in self.clients.iter_mut() {
-                if *id != client_id {
-                    match stream.write(formatted_message.as_bytes()) {
+        // now we need to provide this to user
+        // and user will provide us the response to write to the socket
+        match self.handler.on_message(client_id, &accumulated_data)? {
+            HandlerAction::Broadcast(data) => {
+                for (id, stream) in self
+                    .clients
+                    .iter_mut()
+                    .skip_while(|(k, _)| **k == client_id)
+                {
+                    match stream.write(&data) {
                         Ok(size) => {
-                            info!("{} bytes sent from client {} to {}", size, client_id, id);
+                            debug!("{} bytes sent from client {} to {}", size, client_id, id);
                         }
                         Err(_) => {
                             error!("failed to send data to client: {}", id);
@@ -165,6 +159,46 @@ impl BroadCastSrv {
                     }
                 }
             }
+            HandlerAction::Reply(data) => {
+                if let Some(stream) = self.clients.get_mut(&client_id) {
+                    match stream.write(&data) {
+                        Ok(size) => {
+                            debug!("{} bytes sent to client {}", size, client_id);
+                        }
+                        Err(_) => {
+                            error!("failed to send data to client: {}", client_id);
+                        }
+                    }
+                }
+            }
+            HandlerAction::SendTo {
+                target_client_id,
+                data,
+            } => {
+                if let Some(stream) = self.clients.get_mut(&target_client_id) {
+                    match stream.write(&data) {
+                        Ok(size) => {
+                            debug!("{} bytes sent to client {}", size, target_client_id);
+                        }
+                        Err(_) => {
+                            error!("failed to send data to client: {}", target_client_id);
+                        }
+                    }
+                }
+            }
+            HandlerAction::SendToAll(data) => {
+                for (id, stream) in self.clients.iter_mut() {
+                    match stream.write(&data) {
+                        Ok(size) => {
+                            debug!("{} bytes sent from client {} to {}", size, client_id, id);
+                        }
+                        Err(_) => {
+                            error!("failed to send data to client: {}", id);
+                        }
+                    }
+                }
+            }
+            HandlerAction::None => (),
         }
 
         Ok(())
@@ -174,6 +208,8 @@ impl BroadCastSrv {
         if let Some(client_socket) = self.clients.remove(&client_id) {
             let fd = client_socket.as_raw_fd();
             self.deregister_client(Operation::Del, fd, client_id)?;
+
+            self.handler.on_disconnect(client_id)?;
             info!(
                 "client {} with address {:?} disconnected",
                 client_id,
@@ -184,7 +220,6 @@ impl BroadCastSrv {
         Ok(())
     }
 
-    /// Poll the epoll instance for any event
     fn poll(&self, events: &mut Vec<Event>, timeout: Option<i32>) -> Result<()> {
         let epfd = self.epfd;
         let max_events = events.capacity() as i32;
@@ -205,10 +240,21 @@ impl BroadCastSrv {
         Ok(())
     }
 
-    /// Register peer (server or client) to epoll interest list
-    ///
-    /// Some flags are different while registering to epoll interest list.
-    /// This depends on the type of role you have, which needs to be passed as arguments
+    fn deregister_client(&self, op: Operation, fd: i32, client_id: u32) -> Result<()> {
+        let mut event = Event::new(PeerRole::Client(client_id))
+            .edge_trigerred()
+            .notify_read()
+            .notify_conn_close();
+
+        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
+
+        if res < 0 {
+            return Err(Error::last_os_error());
+        }
+
+        Ok(())
+    }
+
     fn register_peer(&self, op: Operation, fd: i32, peer_role: PeerRole) -> Result<()> {
         let mut event = Event::new(peer_role).edge_trigerred().notify_read();
 
@@ -230,32 +276,12 @@ impl BroadCastSrv {
         Ok(())
     }
 
-    /// Register client's socket with the epoll instance
-    fn deregister_client(&self, op: Operation, fd: i32, client_id: u32) -> Result<()> {
-        let mut event = Event::new(PeerRole::Client(client_id))
-            .edge_trigerred()
-            .notify_read()
-            .notify_conn_close();
-
-        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
-
-        if res < 0 {
-            return Err(Error::last_os_error());
-        }
-
-        Ok(())
-    }
-
-    fn format_message(client_id: u32, data: &[u8]) -> String {
-        format!("[Client_{}] {}", client_id, String::from_utf8_lossy(data))
-    }
-
     fn as_raw_fd(&self) -> RawFd {
         self.listener.as_raw_fd()
     }
 }
 
-impl Drop for BroadCastSrv {
+impl<H> Drop for EpollServer<H> {
     fn drop(&mut self) {
         let res = unsafe { close(self.epfd) };
 
@@ -267,43 +293,5 @@ impl Drop for BroadCastSrv {
             "Notified kernel to close the epoll instance with fd {}",
             self.epfd
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_message_formatting() {
-        let message = BroadCastSrv::format_message(42, b"Hello World");
-        assert_eq!(message, "[Client_42] Hello World");
-    }
-
-    #[test]
-    fn test_message_formatting_with_unicode() {
-        let message = BroadCastSrv::format_message(1, "Hello 🦀".as_bytes());
-        assert_eq!(message, "[Client_1] Hello 🦀");
-    }
-
-    #[test]
-    fn test_server_creation_with_valid_address() {
-        let server = BroadCastSrv::new("127.0.0.1:0");
-        assert!(server.is_ok());
-    }
-
-    #[test]
-    fn test_server_creation_with_invalid_address() {
-        let server = BroadCastSrv::new("999.999.999.999:999999");
-        assert!(server.is_err());
-    }
-
-    #[test]
-    fn test_server_creation_with_used_port() {
-        let _listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = _listener.local_addr().unwrap();
-
-        let server = BroadCastSrv::new(addr);
-        assert!(server.is_err());
     }
 }

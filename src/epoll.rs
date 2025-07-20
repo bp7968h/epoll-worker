@@ -101,24 +101,57 @@ impl From<Operation> for i32 {
 ///
 /// These variants are used to bitmask the `event` filed in `Event`
 #[allow(dead_code)]
-#[repr(i32)]
+#[derive(Debug, PartialEq)]
 pub enum EventType {
     /// Read operation
-    Epollin = 0x1,
+    Epollin,
     /// Write operation
-    Epollout = 0x4,
+    Epollout,
     /// Stream socket peer closed connection or shut down
-    Epollrdhup = 0x2000,
+    Epollrdhup,
     /// Exceptional condition
-    Epollpri = 0x2,
+    Epollpri,
     /// Error condition
-    Epollerr = 0x8,
+    Epollerr,
     /// Hang up happened on associated fd
-    Epollhup = 0x10,
+    Epollhup,
     /// Request edge-trigerred notification
-    Epollet = 1 << 31,
+    Epollet,
     /// Request one-shot notification
-    Epolloneshot = 1 << 30,
+    Epolloneshot,
+    Unknown,
+}
+
+impl From<u32> for EventType {
+    fn from(value: u32) -> Self {
+        match value {
+            0x1 => EventType::Epollin,
+            0x4 => EventType::Epollout,
+            0x2000 => EventType::Epollrdhup,
+            0x2 => EventType::Epollpri,
+            0x8 => EventType::Epollerr,
+            0x10 => EventType::Epollhup,
+            val if val == 1 << 31 => EventType::Epollet,
+            val if val == 1 << 30 => EventType::Epolloneshot,
+            _ => EventType::Unknown,
+        }
+    }
+}
+
+impl From<EventType> for u32 {
+    fn from(value: EventType) -> Self {
+        match value {
+            EventType::Epollin => 0x1,
+            EventType::Epollout => 0x4,
+            EventType::Epollrdhup => 0x2000,
+            EventType::Epollpri => 0x2,
+            EventType::Epollerr => 0x8,
+            EventType::Epollhup => 0x10,
+            EventType::Epollet => 1 << 31,
+            EventType::Epolloneshot => 1 << 30,
+            EventType::Unknown => 0,
+        }
+    }
 }
 
 /// Corresponds to Linux's `epoll_event`
@@ -145,8 +178,8 @@ impl Event {
         }
     }
 
-    pub fn event_type(&self) -> u32 {
-        self.events
+    pub fn event_type(&self) -> EventType {
+        self.events.into()
     }
 
     pub fn role(&self) -> PeerRole {
@@ -196,7 +229,7 @@ mod tests {
         let event = Event::new(PeerRole::Server);
         assert_eq!(event.role(), PeerRole::Server);
         assert_eq!(event.data(), 0);
-        assert_eq!(event.event_type(), 0); // No flags set initially
+        assert_eq!(event.event_type(), EventType::Unknown);
     }
 
     #[test]
@@ -210,7 +243,7 @@ mod tests {
         assert_eq!(event.data(), 5);
 
         // Test that all flags are set correctly
-        let events = event.event_type();
+        let events = event.event_type() as u32;
         assert!(events & (EventType::Epollet as u32) != 0);
         assert!(events & (EventType::Epollin as u32) != 0);
         assert!(events & (EventType::Epollrdhup as u32) != 0);

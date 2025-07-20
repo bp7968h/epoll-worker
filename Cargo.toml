@@ -10,4 +10,4 @@ log = "0.4.27"
 
 [[bin]]
 name = "client"
-path = "src/bin/client.rs"
+path = "examples/client.rs"
