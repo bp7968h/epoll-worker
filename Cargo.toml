@@ -1,13 +1,24 @@
 [package]
-name = "epoll-broadcaster"
+name = "epoll-worker"
 version = "0.1.0"
 edition = "2024"
-default-run = "epoll-broadcaster"
 
 [dependencies]
 env_logger = "0.11.8"
 log = "0.4.27"
 
-[[bin]]
+[[example]]
 name = "client"
 path = "examples/client.rs"
+
+[[example]]
+name = "broadcast_server"
+path = "examples/broadcast_server.rs"
+
+[[example]]
+name = "echo_server"  
+path = "examples/echo_server.rs"
+
+[[example]]
+name = "http_server"
+path = "examples/http_server.rs"
