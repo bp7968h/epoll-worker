@@ -56,7 +56,7 @@ impl<H: EventHandler> EpollServer<H> {
     }
 
     pub fn run(&mut self) -> Result<()> {
-        println!("Server listening on {}", self.local_addr()?);
+        println!("Server listening on {}", self.local_addr()?,);
         self.register_peer(Operation::Add, self.as_raw_fd(), PeerRole::Server)?;
 
         while !self.shutdown_signal.load(Ordering::Relaxed) {
@@ -67,6 +67,10 @@ impl<H: EventHandler> EpollServer<H> {
                 continue;
             }
 
+            debug!(
+                "Now handling {} events received from epoll",
+                notified_events.len()
+            );
             let _ = self.handle_notified_events(&notified_events);
         }
         Ok(())
@@ -79,8 +83,8 @@ impl<H: EventHandler> EpollServer<H> {
                 PeerRole::Client(client_id) => {
                     debug!("Handling events for client with ID [{}]", client_id);
                     match event.event_type() {
-                        EventType::Epollin => self.handle_client_message(client_id)?,
-                        EventType::Epollrdhup => self.handle_client_disconnection(client_id)?,
+                        0x1 => self.handle_client_message(client_id)?,
+                        0x2000 => self.handle_client_disconnection(client_id)?,
                         others => {
                             error!(
                                 "received unknown events in clinet socket id: {}, event_type: {}",
@@ -164,6 +168,7 @@ impl<H: EventHandler> EpollServer<H> {
                     match stream.write(&data) {
                         Ok(size) => {
                             debug!("{} bytes sent to client {}", size, client_id);
+                            let _ = stream.flush();
                         }
                         Err(_) => {
                             error!("failed to send data to client: {}", client_id);
@@ -236,7 +241,7 @@ impl<H: EventHandler> EpollServer<H> {
             events.set_len(res as usize);
         }
 
-        debug!("Successfully got events from epoll wait");
+        debug!("Epoll polling timeout reached, received events {}", res);
         Ok(())
     }
 
@@ -262,6 +267,12 @@ impl<H: EventHandler> EpollServer<H> {
             event = event.notify_conn_close();
         }
 
+        debug!(
+            "Registering peer [{:?}] with fd {} and event flags {:#x}",
+            peer_role,
+            fd,
+            event.event_type() as u32
+        );
         let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
 
         if res < 0 {

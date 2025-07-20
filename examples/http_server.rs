@@ -4,7 +4,21 @@
 //! Test with: curl http://localhost:8080
 
 use epoll_worker::{EpollServer, EventHandler, HandlerAction};
-use log::info;
+use log::{debug, info};
+
+const HTML: &'static str = r#"
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>EPOLL WORKER!</title>
+  </head>
+  <body>
+    <h1>Hello!</h1>
+    <p>Request sent from Epoll-worker</p>
+  </body>
+</html>
+"#;
 
 struct HttpHandler;
 
@@ -29,9 +43,14 @@ impl EventHandler for HttpHandler {
 
     fn on_message(&mut self, _client_id: u32, data: &[u8]) -> std::io::Result<HandlerAction> {
         let request = String::from_utf8_lossy(data);
+        debug!("Request: {}", request);
 
-        if request.starts_with("GET") {
-            let response = "HTTP/1.1 200 OK\r\n\r\nHello World!";
+        if request.starts_with("GET / HTTP/1.1") {
+            let status_line = "HTTP/1.1 200 OK";
+            let contents = HTML;
+            let length = contents.len();
+            let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+
             return Ok(HandlerAction::Reply(response.as_bytes().to_vec()));
         }
 
