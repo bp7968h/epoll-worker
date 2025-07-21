@@ -21,9 +21,9 @@ use crate::{
 pub struct EpollServer<H> {
     listener: TcpListener,
     epfd: i32,
-    clients: HashMap<u32, ClientState>,
+    clients: HashMap<u64, ClientState>,
     shutdown_signal: Arc<AtomicBool>,
-    next_client_id: u32,
+    next_client_id: u64,
     handler: H,
 }
 
@@ -42,10 +42,10 @@ impl<H: EventHandler> EpollServer<H> {
             return Err(Error::last_os_error());
         }
 
-        let fctl_res = unsafe { fcntl(result, 1) };
-        if fctl_res > 0 {
-            let _ = unsafe { fcntl(result, 2, fctl_res | 0x1) };
-        }
+        // let fctl_res = unsafe { fcntl(result, 1) };
+        // if fctl_res > 0 {
+        //     let _ = unsafe { fcntl(result, 2, fctl_res | 0x1) };
+        // }
 
         debug!("Epoll instance created with efd: `{}`", result);
         Ok(EpollServer {
@@ -85,7 +85,7 @@ impl<H: EventHandler> EpollServer<H> {
     fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
         debug!("All Events: {:?}", events);
         for event in events {
-            debug!("Single Event Handling: {}", event);
+            debug!("Single Event Handling: {:?}", event);
             match event.role() {
                 PeerRole::Server => {
                     debug!("[Server] Handling event for server");
@@ -202,7 +202,7 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn handle_client_message(&mut self, client_id: u32) -> Result<()> {
+    fn handle_client_message(&mut self, client_id: u64) -> Result<()> {
         if let Some(client) = self.clients.get_mut(&client_id) {
             let mut action: Option<HandlerAction> = None;
             if !client.read_buf().is_empty() {
@@ -219,7 +219,6 @@ impl<H: EventHandler> EpollServer<H> {
             }
 
             // Process handler action
-            // let stream_fd = client.as_raw_fd();
             if let Some(action_to_handle) = action {
                 match action_to_handle {
                     HandlerAction::Broadcast(data) => {}
@@ -232,9 +231,6 @@ impl<H: EventHandler> EpollServer<H> {
                             client.local_addr().unwrap()
                         );
                         client.shutdown()?;
-                        let stream_fd = client.as_raw_fd();
-                        self.handle_client_disconnection(client_id, stream_fd)?;
-                        let _ = unsafe { close(stream_fd) };
                     }
                     HandlerAction::SendTo {
                         target_client_id,
@@ -248,22 +244,22 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn handle_client_disconnection(&mut self, client_id: u32, fd: i32) -> Result<()> {
-        // if let Some(client_socket) = self.clients.remove(&client_id) {
-        // let fd = client_socket.as_raw_fd();
-        self.deregister_client(Operation::Del, fd)?;
-        debug!(
-            "Deregistered client with id {} from interest list",
-            client_id
-        );
+    fn handle_client_disconnection(&mut self, client_id: u64, _fd: i32) -> Result<()> {
+        if let Some(client_socket) = self.clients.remove(&client_id) {
+            let fd = client_socket.as_raw_fd();
+            self.deregister_interest(Operation::Del, fd)?;
+            debug!(
+                "Deregistered client with id {} from interest list",
+                client_id
+            );
 
-        self.handler.on_disconnect(client_id)?;
-        info!(
-            "client {} with address disconnected",
-            client_id,
-            // client_socket.local_addr().unwrap()
-        );
-        // }
+            self.handler.on_disconnect(client_id)?;
+            info!(
+                "client {} with address disconnected",
+                client_id,
+                // client_socket.local_addr().unwrap()
+            );
+        }
 
         Ok(())
     }
@@ -288,7 +284,7 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn deregister_client(&self, op: Operation, fd: i32) -> Result<()> {
+    fn deregister_interest(&self, op: Operation, fd: i32) -> Result<()> {
         let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, std::ptr::null_mut()) };
 
         if res < 0 {

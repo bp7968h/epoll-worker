@@ -41,7 +41,7 @@ struct HttpHandler;
 impl EventHandler for HttpHandler {
     fn on_connection(
         &mut self,
-        client_id: u32,
+        client_id: u64,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
         info!(
@@ -52,12 +52,12 @@ impl EventHandler for HttpHandler {
         Ok(())
     }
 
-    fn on_disconnect(&mut self, client_id: u32) -> std::io::Result<()> {
+    fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
         info!("Client {} disconnected", client_id);
         Ok(())
     }
 
-    fn on_message(&mut self, _client_id: u32, data: &[u8]) -> std::io::Result<HandlerAction> {
+    fn on_message(&mut self, _client_id: u64, data: &[u8]) -> std::io::Result<HandlerAction> {
         let request = String::from_utf8_lossy(data);
         // debug!("Request: {}", request);
 

@@ -10,7 +10,7 @@ struct EchoHandler;
 impl EventHandler for EchoHandler {
     fn on_connection(
         &mut self,
-        client_id: u32,
+        client_id: u64,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
         info!(
@@ -21,14 +21,14 @@ impl EventHandler for EchoHandler {
         Ok(())
     }
 
-    fn on_disconnect(&mut self, client_id: u32) -> std::io::Result<()> {
+    fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
         info!("Client {} disconnected", client_id);
         Ok(())
     }
 
     fn on_message(
         &mut self,
-        _client_id: u32,
+        _client_id: u64,
         data: &[u8],
     ) -> std::io::Result<epoll_worker::HandlerAction> {
         Ok(HandlerAction::Reply(data.to_vec()))

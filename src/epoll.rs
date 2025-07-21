@@ -53,11 +53,11 @@ unsafe extern "C" {
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum PeerRole {
     Server,
-    Client(u32),
+    Client(u64),
 }
 
-impl From<u32> for PeerRole {
-    fn from(value: u32) -> Self {
+impl From<u64> for PeerRole {
+    fn from(value: u64) -> Self {
         match value {
             0 => PeerRole::Server,
             others => PeerRole::Client(others),
@@ -65,7 +65,7 @@ impl From<u32> for PeerRole {
     }
 }
 
-impl From<PeerRole> for u32 {
+impl From<PeerRole> for u64 {
     fn from(value: PeerRole) -> Self {
         match value {
             PeerRole::Server => 0,
@@ -131,14 +131,14 @@ pub enum EventType {
 ///
 /// data means user data/identifier
 #[derive(Debug)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct Event {
     /// bit mask composed by ORing together zero or more event types
     /// returned by `epoll_wait`, and input flags which affect its behaviour
     events: u32,
     /// Data kernel saves and returns via `epoll_wait` when
     /// file descriptor becomes ready
-    data: u32,
+    data: u64,
 }
 
 #[allow(dead_code)]
@@ -158,13 +158,13 @@ impl Event {
         PeerRole::from(self.data)
     }
 
-    pub fn data(&self) -> u32 {
+    pub fn data(&self) -> u64 {
         self.data
     }
 }
 
-impl Display for Event {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Event({:#x}, {})", self.events, self.data)
-    }
-}
+// impl Display for Event {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "Event({:#x}, {})", self.events, self.data)
+//     }
+// }
