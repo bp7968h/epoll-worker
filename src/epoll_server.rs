@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::{Error, ErrorKind, Read, Result, Write},
-    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    net::{SocketAddr, TcpListener, ToSocketAddrs},
     os::fd::{AsRawFd, RawFd},
     sync::{
         Arc,
@@ -12,56 +12,62 @@ use std::{
 use log::{debug, error, info};
 
 use crate::{
-    Event, EventType, Operation, PeerRole, close, epoll_create, epoll_ctl, epoll_wait,
+    Event, EventType, Operation, PeerRole,
+    client_state::ClientState,
+    close, epoll_create1, epoll_ctl, epoll_wait, fcntl,
     handler::{EventHandler, HandlerAction},
 };
 
 pub struct EpollServer<H> {
     listener: TcpListener,
     epfd: i32,
-    next_client_id: u32,
-    clients: HashMap<u32, TcpStream>,
+    clients: HashMap<u32, ClientState>,
     shutdown_signal: Arc<AtomicBool>,
+    next_client_id: u32,
     handler: H,
 }
 
 impl<H: EventHandler> EpollServer<H> {
     pub fn new<A: ToSocketAddrs>(addr: A, handler: H) -> Result<Self> {
         let listener = TcpListener::bind(addr)?;
+        if let Err(e) = listener.set_nonblocking(true) {
+            error!("Failed to set listener to non blocking");
+            return Err(e);
+        }
 
-        let result = unsafe { epoll_create(1) };
+        let result = unsafe { epoll_create1(0) };
 
         if result < 0 {
             error!("Failed to create epoll instance");
             return Err(Error::last_os_error());
         }
 
+        let fctl_res = unsafe { fcntl(result, 1) };
+        if fctl_res > 0 {
+            let _ = unsafe { fcntl(result, 2, fctl_res | 0x1) };
+        }
+
         debug!("Epoll instance created with efd: `{}`", result);
         Ok(EpollServer {
             listener,
             epfd: result,
-            next_client_id: 1,
             clients: HashMap::new(),
             shutdown_signal: Arc::new(AtomicBool::new(false)),
+            next_client_id: 1,
             handler,
         })
     }
 
-    pub fn shutdown_signal(&self) -> Arc<AtomicBool> {
-        self.shutdown_signal.clone()
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.listener.local_addr()
-    }
-
     pub fn run(&mut self) -> Result<()> {
-        println!("Server listening on {}", self.local_addr()?,);
-        self.register_peer(Operation::Add, self.as_raw_fd(), PeerRole::Server)?;
+        info!("Server listening on {}", self.local_addr()?,);
+
+        let event_bitmask: i32 = EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+        let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
+        self.register_interest(Operation::Add, self.as_raw_fd(), epoll_event)?;
 
         while !self.shutdown_signal.load(Ordering::Relaxed) {
-            let mut notified_events = Vec::with_capacity(12);
-            self.poll(&mut notified_events, Some(1000))?;
+            let mut notified_events = Vec::with_capacity(1024);
+            self.poll(&mut notified_events, Some(3000))?;
 
             if notified_events.is_empty() {
                 continue;
@@ -71,27 +77,66 @@ impl<H: EventHandler> EpollServer<H> {
                 "Now handling {} events received from epoll",
                 notified_events.len()
             );
-            let _ = self.handle_notified_events(&notified_events);
+            let _ = self.handle_notified_events(&notified_events)?;
         }
         Ok(())
     }
 
     fn handle_notified_events(&mut self, events: &[Event]) -> Result<()> {
+        debug!("All Events: {:?}", events);
         for event in events {
+            debug!("Single Event Handling: {}", event);
             match event.role() {
-                PeerRole::Server => self.accept_new_client()?,
+                PeerRole::Server => {
+                    debug!("[Server] Handling event for server");
+                    if let Err(e) = self.accept_new_client() {
+                        error!("[Server] Error accepting new client: {}", e);
+                    }
+                    let event_bitmask: i32 =
+                        EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+                    let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
+                    self.register_interest(Operation::Mod, self.as_raw_fd(), epoll_event)?;
+                }
                 PeerRole::Client(client_id) => {
-                    debug!("Handling events for client with ID [{}]", client_id);
-                    match event.event_type() {
-                        0x1 => self.handle_client_message(client_id)?,
-                        0x2000 => self.handle_client_disconnection(client_id)?,
-                        others => {
-                            error!(
-                                "received unknown events in clinet socket id: {}, event_type: {}",
-                                client_id, others as u32
+                    debug!("Handling event for client with ID [{}]", client_id);
+                    let mut should_disconnect = None;
+                    let event_type = event.event_type() as i32;
+                    let read_event = EventType::Epollin as i32;
+                    let write_event = EventType::Epollout as i32;
+                    let oneshot_event = EventType::Epolloneshot as i32;
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        let stream_fd = client.as_raw_fd();
+                        if event_type & read_event == read_event {
+                            debug!("READ BLOCK");
+                            // Handle read
+                            Self::handle_client_read(client)?;
+                            let epoll_event = if self.handler.is_data_complete(client.read_buf()) {
+                                let bitmask = write_event | oneshot_event;
+                                Event::new(bitmask as u32, PeerRole::Client(client_id))
+                            } else {
+                                let bitmask = read_event | oneshot_event;
+                                Event::new(bitmask as u32, PeerRole::Client(client_id))
+                            };
+                            self.register_interest(Operation::Mod, stream_fd, epoll_event)?;
+                        } else if event_type & write_event == write_event {
+                            debug!("WRITE BLOCK");
+                            // Handle write
+                            self.handle_client_message(client_id)?;
+                        } else {
+                            debug!("DISCONNECTION BLOCK");
+                            debug!(
+                                "Client ID: {}, Cliend Addr: {} Client Fd: {}, Event Type: {:#x}",
+                                client_id,
+                                client.local_addr().unwrap(),
+                                client.as_raw_fd(),
+                                event_type,
                             );
-                            self.handle_client_disconnection(client_id)?
+                            should_disconnect = Some(client_id);
                         }
+                    }
+
+                    if let Some(id) = should_disconnect {
+                        let _ = self.clients.remove(&id);
                     }
                 }
             }
@@ -100,127 +145,125 @@ impl<H: EventHandler> EpollServer<H> {
     }
 
     fn accept_new_client(&mut self) -> Result<()> {
-        debug!("Handlling server events");
         let (socket, addr) = self.listener.accept()?;
-        info!("new client connection from {}", addr);
-        socket.set_nonblocking(true)?;
+        info!("[Server] new client connection from {}", addr);
 
+        socket.set_nonblocking(true)?;
         let socket_fd = socket.as_raw_fd();
         let identifier = self.next_client_id;
 
-        // run user provided handler when client is connected to server
-        self.handler.on_connection(identifier, &socket)?;
+        if let Err(e) = self.handler.on_connection(identifier, &socket) {
+            error!(
+                "[Server] Handler on_connection failed for client {}: {}",
+                identifier, e
+            );
+        }
 
-        self.register_peer(Operation::Add, socket_fd, PeerRole::Client(identifier))?;
+        let bitmask: i32 = EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+        let epoll_event = Event::new(bitmask as u32, PeerRole::Client(identifier));
+        self.register_interest(Operation::Add, socket_fd, epoll_event)?;
+
         self.next_client_id += 1;
-        self.clients.insert(identifier, socket);
+        let new_client = ClientState::new(socket);
+        self.clients.insert(identifier, new_client);
+        Ok(())
+    }
+
+    fn handle_client_read(client_state: &mut ClientState) -> Result<()> {
+        let mut buffer = vec![0u8; 4096];
+        let mut total_read = 0;
+        loop {
+            match client_state.stream_mut().read(&mut buffer) {
+                Ok(0) => {
+                    debug!("Client closed connection or no more data to read");
+                    break;
+                }
+                Ok(n) => {
+                    debug!("Read {} bytes", n);
+                    client_state.read_buf_mut().extend_from_slice(&buffer[..n]);
+                    total_read += n;
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    debug!(
+                        "Drained the kernel's buffer (total read: {} bytes)",
+                        total_read
+                    );
+                    break;
+                }
+                Err(e) => {
+                    error!("Read error: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        client_state
+            .read_buf_mut()
+            .extend_from_slice(&buffer[..total_read]);
         Ok(())
     }
 
     fn handle_client_message(&mut self, client_id: u32) -> Result<()> {
-        // read event -> broadcast to all client
-        let mut accumulated_data = Vec::new();
-        if let Some(client_soc) = self.clients.get_mut(&client_id) {
-            let mut buffer = vec![0u8; 4096];
-            loop {
-                match client_soc.read(&mut buffer) {
-                    Ok(0) => {
-                        debug!("Read 0 bytes - connection closed or no more data");
-                        break;
-                    }
-                    Ok(n) => {
-                        debug!("Read {} bytes", n);
-                        accumulated_data.extend_from_slice(&buffer[..n]);
-                    }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                        debug!("WouldBlock - no more data available");
-                        break;
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            let mut action: Option<HandlerAction> = None;
+            if !client.read_buf().is_empty() {
+                match self.handler.on_message(client_id, client.read_buf()) {
+                    Ok(returned_action) => {
+                        action = Some(returned_action);
+                        client.read_buf_mut().clear();
                     }
                     Err(e) => {
-                        error!("Read error: {}", e);
+                        error!("Handler on_message error for client {}: {}", client_id, e);
                         return Err(e);
                     }
                 }
             }
-        }
-        // at this stage we read all data and stored in buffer
-        // now we need to provide this to user
-        // and user will provide us the response to write to the socket
-        match self.handler.on_message(client_id, &accumulated_data)? {
-            HandlerAction::Broadcast(data) => {
-                for (id, stream) in self
-                    .clients
-                    .iter_mut()
-                    .skip_while(|(k, _)| **k == client_id)
-                {
-                    match stream.write(&data) {
-                        Ok(size) => {
-                            debug!("{} bytes sent from client {} to {}", size, client_id, id);
-                        }
-                        Err(_) => {
-                            error!("failed to send data to client: {}", id);
-                        }
-                    }
-                }
-            }
-            HandlerAction::Reply(data) => {
-                if let Some(stream) = self.clients.get_mut(&client_id) {
-                    match stream.write(&data) {
-                        Ok(size) => {
-                            debug!("{} bytes sent to client {}", size, client_id);
-                            let _ = stream.flush();
-                        }
-                        Err(_) => {
-                            error!("failed to send data to client: {}", client_id);
-                        }
-                    }
-                }
-            }
-            HandlerAction::SendTo {
-                target_client_id,
-                data,
-            } => {
-                if let Some(stream) = self.clients.get_mut(&target_client_id) {
-                    match stream.write(&data) {
-                        Ok(size) => {
-                            debug!("{} bytes sent to client {}", size, target_client_id);
-                        }
-                        Err(_) => {
-                            error!("failed to send data to client: {}", target_client_id);
-                        }
-                    }
-                }
-            }
-            HandlerAction::SendToAll(data) => {
-                for (id, stream) in self.clients.iter_mut() {
-                    match stream.write(&data) {
-                        Ok(size) => {
-                            debug!("{} bytes sent from client {} to {}", size, client_id, id);
-                        }
-                        Err(_) => {
-                            error!("failed to send data to client: {}", id);
-                        }
-                    }
-                }
-            }
-            HandlerAction::None => (),
-        }
 
+            // Process handler action
+            // let stream_fd = client.as_raw_fd();
+            if let Some(action_to_handle) = action {
+                match action_to_handle {
+                    HandlerAction::Broadcast(data) => {}
+                    HandlerAction::Reply(data) => {
+                        let written_bytes = client.write(&data)?;
+                        debug!(
+                            "Sent {} bytes Client Id: {} at Client Address: {}",
+                            written_bytes,
+                            client_id,
+                            client.local_addr().unwrap()
+                        );
+                        client.shutdown()?;
+                        let stream_fd = client.as_raw_fd();
+                        self.handle_client_disconnection(client_id, stream_fd)?;
+                        let _ = unsafe { close(stream_fd) };
+                    }
+                    HandlerAction::SendTo {
+                        target_client_id,
+                        data,
+                    } => {}
+                    HandlerAction::SendToAll(data) => {}
+                    HandlerAction::None => (),
+                }
+            }
+        }
         Ok(())
     }
 
-    fn handle_client_disconnection(&mut self, client_id: u32) -> Result<()> {
-        if let Some(client_socket) = self.clients.remove(&client_id) {
-            let fd = client_socket.as_raw_fd();
-            self.deregister_client(Operation::Del, fd, client_id)?;
+    fn handle_client_disconnection(&mut self, client_id: u32, fd: i32) -> Result<()> {
+        // if let Some(client_socket) = self.clients.remove(&client_id) {
+        // let fd = client_socket.as_raw_fd();
+        self.deregister_client(Operation::Del, fd)?;
+        debug!(
+            "Deregistered client with id {} from interest list",
+            client_id
+        );
 
-            self.handler.on_disconnect(client_id)?;
-            info!(
-                "client {} with address {:?} disconnected",
-                client_id,
-                client_socket.local_addr().unwrap()
-            );
-        }
+        self.handler.on_disconnect(client_id)?;
+        info!(
+            "client {} with address disconnected",
+            client_id,
+            // client_socket.local_addr().unwrap()
+        );
+        // }
 
         Ok(())
     }
@@ -245,13 +288,8 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn deregister_client(&self, op: Operation, fd: i32, client_id: u32) -> Result<()> {
-        let mut event = Event::new(PeerRole::Client(client_id))
-            .edge_trigerred()
-            .notify_read()
-            .notify_conn_close();
-
-        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
+    fn deregister_client(&self, op: Operation, fd: i32) -> Result<()> {
+        let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, std::ptr::null_mut()) };
 
         if res < 0 {
             return Err(Error::last_os_error());
@@ -260,31 +298,38 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn register_peer(&self, op: Operation, fd: i32, peer_role: PeerRole) -> Result<()> {
-        let mut event = Event::new(peer_role).edge_trigerred().notify_read();
-
-        if let PeerRole::Client(_) = &peer_role {
-            event = event.notify_conn_close();
-        }
-
+    fn register_interest(&self, op: Operation, fd: i32, mut event: Event) -> Result<()> {
         debug!(
             "Registering peer [{:?}] with fd {} and event flags {:#x}",
-            peer_role,
+            PeerRole::from(event.data()),
             fd,
-            event.event_type() as u32
+            event.event_type()
         );
         let res = unsafe { epoll_ctl(self.epfd, op.into(), fd, &raw mut event) };
 
         if res < 0 {
-            debug!("Failed to register {:?} to epoll interest list", peer_role);
+            debug!(
+                "Failed to register {:?} with events flags {:#x} to epoll interest list",
+                PeerRole::from(event.data()),
+                event.event_type()
+            );
             return Err(Error::last_os_error());
         }
 
         debug!(
-            "Successfully registered {:?} to epoll interest list",
-            peer_role
+            "Successfully registered {:?} with events flags {:#x} to epoll interest list",
+            PeerRole::from(event.data()),
+            event.event_type()
         );
         Ok(())
+    }
+
+    pub fn shutdown_signal(&self) -> Arc<AtomicBool> {
+        self.shutdown_signal.clone()
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.listener.local_addr()
     }
 
     fn as_raw_fd(&self) -> RawFd {

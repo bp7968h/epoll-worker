@@ -15,4 +15,5 @@ pub trait EventHandler {
     fn on_connection(&mut self, client_id: u32, stream: &TcpStream) -> Result<()>;
     fn on_message(&mut self, client_id: u32, data: &[u8]) -> Result<HandlerAction>;
     fn on_disconnect(&mut self, client_id: u32) -> Result<()>;
+    fn is_data_complete(&mut self, data: &[u8]) -> bool;
 }

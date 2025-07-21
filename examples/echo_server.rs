@@ -33,6 +33,10 @@ impl EventHandler for EchoHandler {
     ) -> std::io::Result<epoll_worker::HandlerAction> {
         Ok(HandlerAction::Reply(data.to_vec()))
     }
+
+    fn is_data_complete(&mut self, data: &[u8]) -> bool {
+        true
+    }
 }
 fn main() -> std::io::Result<()> {
     env_logger::init();

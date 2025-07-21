@@ -3,10 +3,12 @@
 //! Usage: RUST_LOG=info cargo run --example http_server
 //! Test with: curl http://localhost:8080
 
+use std::io::BufRead;
+
 use epoll_worker::{EpollServer, EventHandler, HandlerAction};
 use log::{debug, info};
 
-const HTML: &'static str = r#"
+const HTML_200: &'static str = r#"
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -16,6 +18,20 @@ const HTML: &'static str = r#"
   <body>
     <h1>Hello!</h1>
     <p>Request sent from Epoll-worker</p>
+  </body>
+</html>
+"#;
+
+const HTML_404: &'static str = r#"
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>EPOLL WORKER!</title>
+  </head>
+  <body>
+    <h1>Oops!</h1>
+    <p>Sorry, I don't know what you're asking for.</p>
   </body>
 </html>
 "#;
@@ -43,20 +59,47 @@ impl EventHandler for HttpHandler {
 
     fn on_message(&mut self, _client_id: u32, data: &[u8]) -> std::io::Result<HandlerAction> {
         let request = String::from_utf8_lossy(data);
-        debug!("Request: {}", request);
+        // debug!("Request: {}", request);
 
-        if request.starts_with("GET / HTTP/1.1") {
-            let status_line = "HTTP/1.1 200 OK";
-            let contents = HTML;
-            let length = contents.len();
-            let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+        let (status_line, contents) = if request.starts_with("GET / HTTP/1.1") {
+            ("HTTP/1.1 200 OK", HTML_200)
+        } else {
+            ("HTTP/1.1 404 NOT FOUND", HTML_404)
+        };
+        let length = contents.len();
 
-            return Ok(HandlerAction::Reply(response.as_bytes().to_vec()));
+        let response = format!(
+            "{status_line}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{contents}"
+        );
+
+        Ok(HandlerAction::Reply(response.as_bytes().to_vec()))
+    }
+
+    fn is_data_complete(&mut self, data: &[u8]) -> bool {
+        let data_str = String::from_utf8_lossy(data);
+        debug!("Received: {}", data_str);
+        let mut lines = data_str.lines();
+        if let Some(line) = lines.next() {
+            if let Some(method) = line.split(" ").nth(0) {
+                match method {
+                    "GET" | "DELETE" => return true,
+                    _ => (),
+                }
+            }
         }
 
-        Ok(HandlerAction::Reply(
-            b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec(),
-        ))
+        if let Some(content_len) = lines.find(|l| l.to_lowercase().starts_with("content-length: "))
+        {
+            if let Some(len) = content_len.to_lowercase().strip_prefix("content-length: ") {
+                let is_valid = data.len()
+                    > len
+                        .parse::<usize>()
+                        .expect("content-length to be valid number");
+                debug!("Content-Length Validate: {}/{}", is_valid, len);
+                return is_valid;
+            }
+        }
+        false
     }
 }
 fn main() -> std::io::Result<()> {

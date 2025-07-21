@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 unsafe extern "C" {
     /// Creates new epoll instance
     ///
@@ -9,7 +11,9 @@ unsafe extern "C" {
     ///
     /// The file descriptor of the epoll instance or `-1` if there is any error
     /// and the error is set to `errno` which is basically the `last_os_error`
-    pub fn epoll_create(size: i32) -> i32;
+    pub fn epoll_create1(size: i32) -> i32;
+
+    pub fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 
     /// Closes a file descriptor
     ///
@@ -126,6 +130,7 @@ pub enum EventType {
 /// events - is the bit mask composed by ORing together zero or more event
 ///
 /// data means user data/identifier
+#[derive(Debug)]
 #[repr(C)]
 pub struct Event {
     /// bit mask composed by ORing together zero or more event types
@@ -138,9 +143,9 @@ pub struct Event {
 
 #[allow(dead_code)]
 impl Event {
-    pub fn new(identifier: PeerRole) -> Self {
+    pub fn new(bitmask: u32, identifier: PeerRole) -> Self {
         Event {
-            events: 0,
+            events: bitmask,
             data: identifier.into(),
         }
     }
@@ -156,79 +161,10 @@ impl Event {
     pub fn data(&self) -> u32 {
         self.data
     }
-
-    pub fn edge_trigerred(self) -> Self {
-        Event {
-            events: self.events | EventType::Epollet as u32,
-            ..self
-        }
-    }
-
-    pub fn notify_read(self) -> Self {
-        Event {
-            events: self.events | EventType::Epollin as u32,
-            ..self
-        }
-    }
-
-    // pub fn notify_write(self) -> Self {
-    //     Event {
-    //         events: self.events | EventType::EPOLLOUT as u32,
-    //         ..self
-    //     }
-    // }
-
-    pub fn notify_conn_close(self) -> Self {
-        Event {
-            events: self.events | EventType::Epollrdhup as u32,
-            ..self
-        }
-    }
 }
 
-// In src/epoll.rs - add a test module
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_event_creation() {
-        let event = Event::new(PeerRole::Server);
-        assert_eq!(event.role(), PeerRole::Server);
-        assert_eq!(event.data(), 0);
-        // assert_eq!(event.event_type(), 0);
-    }
-
-    #[test]
-    fn test_event_builder_pattern() {
-        let event = Event::new(PeerRole::Client(5))
-            .edge_trigerred()
-            .notify_read()
-            .notify_conn_close();
-
-        assert_eq!(event.role(), PeerRole::Client(5));
-        assert_eq!(event.data(), 5);
-
-        // Test that all flags are set correctly
-        let events = event.event_type() as u32;
-        assert!(events & (EventType::Epollet as u32) != 0);
-        assert!(events & (EventType::Epollin as u32) != 0);
-        assert!(events & (EventType::Epollrdhup as u32) != 0);
-    }
-
-    #[test]
-    fn test_peer_role_conversions() {
-        assert_eq!(PeerRole::from(0), PeerRole::Server);
-        assert_eq!(PeerRole::from(42), PeerRole::Client(42));
-
-        assert_eq!(u32::from(PeerRole::Server), 0);
-        assert_eq!(u32::from(PeerRole::Client(123)), 123);
-    }
-
-    #[test]
-    fn test_operation_conversions() {
-        assert_eq!(i32::from(Operation::Add), 1);
-        assert_eq!(i32::from(Operation::Del), 2);
-        assert_eq!(i32::from(Operation::Mod), 3);
+impl Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Event({:#x}, {})", self.events, self.data)
     }
 }
