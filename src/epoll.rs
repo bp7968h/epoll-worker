@@ -1,50 +1,12 @@
-use std::fmt::Display;
+use std::{
+    io::{Error, Result},
+    mem::MaybeUninit,
+    os::fd::RawFd,
+};
 
-unsafe extern "C" {
-    /// Creates new epoll instance
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - Size is required but ingnored and must be greater than 0
-    ///
-    /// # Returns
-    ///
-    /// The file descriptor of the epoll instance or `-1` if there is any error
-    /// and the error is set to `errno` which is basically the `last_os_error`
-    pub fn epoll_create1(size: i32) -> i32;
+use log::{debug, error};
 
-    pub fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-
-    /// Closes a file descriptor
-    ///
-    /// This is used to close the epoll instance when no longer needed.
-    /// OS frees the resources associated with the epoll instance that we created.
-    ///
-    /// # Returns
-    ///
-    /// `0` on success and `-1` on error
-    pub fn close(fd: i32) -> i32;
-
-    /// Add, modify or remove entries in interest list of epoll instance
-    ///
-    /// # Arguments
-    ///
-    /// * `epfd` - epoll instance file descriptor
-    /// * `op` - operation to be performed for target file descriptor
-    /// * `fd` - target file descriptor
-    /// * `event` -
-    pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut Event) -> i32;
-
-    /// Wait for events on epoll instance
-    ///
-    /// # Arguments
-    ///
-    /// * `epfd` - epoll instance file descriptor
-    /// * `events` - buffer to fill the returned events notification
-    /// * `max_events` - number of max events to be filled, must be greater than zero
-    /// * `timeouot` - number of milliseconds that `epoll_wait` will block
-    pub fn epoll_wait(epfd: i32, events: *mut Event, max_events: i32, timeout: i32) -> i32;
-}
+use crate::ep_syscall;
 
 /// Represents either server or client
 ///
@@ -163,8 +125,101 @@ impl Event {
     }
 }
 
-// impl Display for Event {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "Event({:#x}, {})", self.events, self.data)
-//     }
-// }
+/// Epoll wrapper
+///
+/// Encapsulates epoll operations including
+/// creating epoll instance
+/// getting ready events
+/// adding interest to epoll instance,
+/// modifyinf interest to epoll instance,
+/// deleting insterest from epoll instance
+pub struct Epoll {
+    epfd: RawFd,
+}
+
+impl Epoll {
+    /// Create new instance of epoll
+    pub fn new() -> Result<Self> {
+        let epfd = ep_syscall!(epoll_create1(0))?;
+
+        // Validate the file descriptor (F_GETFD)
+        if let Err(e) = ep_syscall!(fcntl(epfd, 1)) {
+            let _ = ep_syscall!(close(epfd));
+            return Err(e);
+        }
+
+        Ok(Epoll { epfd })
+    }
+
+    /// Get events from ready list
+    pub fn wait(&self, events: &mut Vec<Event>, timeout: Option<i32>) -> Result<()> {
+        let max_events = events.capacity() as i32;
+        let timeout = timeout.unwrap_or(-1);
+
+        let res = ep_syscall!(epoll_wait(
+            self.epfd,
+            events.as_mut_ptr(),
+            max_events,
+            timeout
+        ))?;
+
+        // Kernel should always return the bounded number of events
+        if res > max_events {
+            // EINVAL = 22 (invalid argument)
+            return Err(Error::from_raw_os_error(22));
+        }
+        unsafe {
+            events.set_len(res as usize);
+        }
+
+        if timeout.is_negative() {
+            debug!("Epoll polling timeout reached, retrying...");
+        } else {
+            debug!("Received {} events from epoll", res);
+        }
+        Ok(())
+    }
+
+    /// Add event to interest list
+    pub fn add_interest(&self, fd: RawFd, mut event: Event) -> Result<()> {
+        self.control_interest(Operation::Add, fd, Some(&mut event))
+    }
+
+    /// Modify event in interest list
+    pub fn modify_interest(&self, fd: RawFd, mut event: Event) -> Result<()> {
+        self.control_interest(Operation::Mod, fd, Some(&mut event))
+    }
+
+    /// Remove event from interest list
+    pub fn remove_interest(&self, fd: RawFd) -> Result<()> {
+        self.control_interest(Operation::Del, fd, None)
+    }
+
+    fn control_interest(&self, op: Operation, fd: RawFd, event: Option<&mut Event>) -> Result<()> {
+        if fd < 0 {
+            // EBADF = 9 (Bad file descriptor)
+            return Err(Error::from_raw_os_error(9));
+        }
+
+        let event_ptr = match event {
+            Some(event) => event as *mut Event,
+            None => std::ptr::null_mut(),
+        };
+
+        let _ = ep_syscall!(epoll_ctl(self.epfd, op.into(), fd, event_ptr))?;
+
+        Ok(())
+    }
+
+    pub fn fd(&self) -> RawFd {
+        self.epfd
+    }
+}
+
+impl Drop for Epoll {
+    fn drop(&mut self) {
+        if let Err(e) = ep_syscall!(close(self.epfd)) {
+            error!("Failed to close epoll fd {}: {}", self.epfd, e);
+        }
+    }
+}
