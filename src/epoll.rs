@@ -1,6 +1,5 @@
 use std::{
     io::{Error, Result},
-    mem::MaybeUninit,
     os::fd::RawFd,
 };
 

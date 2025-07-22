@@ -1,7 +1,6 @@
 mod epoll;
 mod ffi;
 pub(crate) use epoll::*;
-pub(crate) use ffi::*;
 
 mod epoll_server;
 mod handler;
@@ -27,12 +26,14 @@ pub use handler::{EventHandler, HandlerAction};
 #[macro_export]
 macro_rules! ep_syscall {
     ($epoll_fn:ident ( $($arg:expr),* )) => {{
-        let result = unsafe { crate::ffi::$epoll_fn($($arg,)*) };
+        unsafe {
+            let result = $crate::ffi::$epoll_fn($($arg,)*);
 
-        if result < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(result)
+            if result < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(result)
+            }
         }
     }};
 }

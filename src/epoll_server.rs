@@ -64,7 +64,8 @@ impl<H: EventHandler> EpollServer<H> {
                 "Now handling {} events received from epoll",
                 notified_events.len()
             );
-            let _ = self.handle_notified_events(&notified_events)?;
+
+            self.handle_notified_events(&notified_events)?;
         }
         Ok(())
     }
