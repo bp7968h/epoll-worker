@@ -42,6 +42,7 @@ impl From<PeerRole> for u64 {
 ///     ADD = EPOLL_CTL_ADD
 ///     DEL = EPOLL_CTL_DEL
 ///     MOD = EPOLL_CTL_MOD
+#[derive(Debug, Clone, Copy)]
 pub enum Operation {
     /// Add entry to the interest list of the epoll instance
     Add,
@@ -153,7 +154,7 @@ impl Epoll {
     /// Get events from ready list
     pub fn wait(&self, events: &mut Vec<Event>, timeout: Option<i32>) -> Result<()> {
         let max_events = events.capacity() as i32;
-        let timeout = timeout.unwrap_or(-1);
+        let timeout = timeout.unwrap_or(1000);
 
         let res = ep_syscall!(epoll_wait(
             self.epfd,
@@ -205,7 +206,7 @@ impl Epoll {
             None => std::ptr::null_mut(),
         };
 
-        let _ = ep_syscall!(epoll_ctl(self.epfd, op.into(), fd, event_ptr))?;
+        let _ = ep_syscall!(epoll_ctl(self.epfd, i32::from(op), fd, event_ptr))?;
 
         Ok(())
     }

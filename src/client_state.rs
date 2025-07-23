@@ -4,6 +4,7 @@ use std::{
     os::fd::{AsRawFd, RawFd},
 };
 
+#[derive(Debug)]
 pub struct ClientState {
     stream: TcpStream,
     read_buffer: Vec<u8>,

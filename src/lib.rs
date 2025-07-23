@@ -26,14 +26,18 @@ pub use handler::{EventHandler, HandlerAction};
 #[macro_export]
 macro_rules! ep_syscall {
     ($epoll_fn:ident ( $($arg:expr),* )) => {{
-        unsafe {
-            let result = $crate::ffi::$epoll_fn($($arg,)*);
 
-            if result < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(result)
-            }
+        if false {
+            $(
+                let _ = $arg;
+            )*
+        };
+        let result = unsafe { $crate::ffi::$epoll_fn($($arg,)*) };
+
+        if result < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(result)
         }
     }};
 }

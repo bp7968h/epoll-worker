@@ -42,5 +42,5 @@ fn main() -> std::io::Result<()> {
 
     let handler = BroadcastHandler;
     let mut server = EpollServer::new("127.0.0.1:8080", handler)?;
-    server.run()
+    server.run(None)
 }

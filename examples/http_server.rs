@@ -59,18 +59,21 @@ impl EventHandler for HttpHandler {
 
     fn on_message(&mut self, _client_id: u64, data: &[u8]) -> std::io::Result<HandlerAction> {
         let request = String::from_utf8_lossy(data);
-        // debug!("Request: {}", request);
-
-        let (status_line, contents) = if request.starts_with("GET / HTTP/1.1") {
-            ("HTTP/1.1 200 OK", HTML_200)
-        } else {
-            ("HTTP/1.1 404 NOT FOUND", HTML_404)
+        let (status_line, contents) = match request.lines().next() {
+            Some(first_line) => {
+                if first_line.starts_with("GET / HTTP/1.1") {
+                    ("HTTP/1.1 200 OK", HTML_200)
+                } else if first_line.starts_with("GET ") && first_line.ends_with(" HTTP/1.1") {
+                    ("HTTP/1.1 404 NOT FOUND", HTML_404)
+                } else {
+                    ("HTTP/1.1 400 BAD REQUEST", HTML_404)
+                }
+            }
+            None => ("HTTP/1.1 400 BAD REQUEST", HTML_404),
         };
         let length = contents.len();
 
-        let response = format!(
-            "{status_line}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{contents}"
-        );
+        let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
 
         Ok(HandlerAction::Reply(response.as_bytes().to_vec()))
     }
@@ -107,5 +110,5 @@ fn main() -> std::io::Result<()> {
 
     let handler = HttpHandler;
     let mut server = EpollServer::new("127.0.0.1:8080", handler)?;
-    server.run()
+    server.run(None)
 }
