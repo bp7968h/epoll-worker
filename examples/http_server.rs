@@ -3,8 +3,6 @@
 //! Usage: RUST_LOG=info cargo run --example http_server
 //! Test with: curl http://localhost:8080
 
-use std::io::BufRead;
-
 use epoll_worker::{EpollServer, EventHandler, HandlerAction};
 use log::{debug, info};
 

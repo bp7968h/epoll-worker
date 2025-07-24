@@ -34,7 +34,7 @@ impl EventHandler for EchoHandler {
         Ok(HandlerAction::Reply(data.to_vec()))
     }
 
-    fn is_data_complete(&mut self, data: &[u8]) -> bool {
+    fn is_data_complete(&mut self, _data: &[u8]) -> bool {
         true
     }
 }

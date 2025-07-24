@@ -32,7 +32,7 @@ impl EventHandler for BroadcastHandler {
         let message = format!("[Client_{}] {}", client_id, String::from_utf8_lossy(data));
         Ok(HandlerAction::Broadcast(message.into_bytes()))
     }
-    fn is_data_complete(&mut self, data: &[u8]) -> bool {
+    fn is_data_complete(&mut self, _data: &[u8]) -> bool {
         true
     }
 }

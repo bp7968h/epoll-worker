@@ -57,13 +57,11 @@ impl<H: EventHandler> EpollServer<H> {
     /// uses `1000` as the default timeout
     pub fn run(&mut self, timeout: Option<i32>) -> Result<()> {
         info!("Server listening on {}", self.local_addr()?,);
-        let event_bitmask: i32 = EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+        // let event_bitmask: i32 = EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+        let event_bitmask: i32 = EventType::Epollin as i32 | EventType::Epollet as i32;
         let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
         self.epoll.add_interest(self.as_raw_fd(), epoll_event)?;
 
-        let mut total_r = 0;
-        let mut total_w = 0;
-        let mut total_d = 0;
         while !self.shutdown_signal.load(Ordering::Relaxed) {
             let mut notified_events = Vec::with_capacity(1024);
             self.epoll.wait(&mut notified_events, timeout)?;
@@ -77,7 +75,7 @@ impl<H: EventHandler> EpollServer<H> {
                 notified_events.len()
             );
 
-            self.handle_events(&notified_events, &mut total_r, &mut total_w, &mut total_d)?;
+            self.handle_events(&notified_events)?;
         }
         Ok(())
     }
@@ -91,23 +89,29 @@ impl<H: EventHandler> EpollServer<H> {
     /// Client:
     ///     First interested in read event, and based on the data that we received
     ///     we can to decide wheather to keep on reading or switch to write events
-    fn handle_events(
-        &mut self,
-        events: &[Event],
-        total_r: &mut i32,
-        total_w: &mut i32,
-        total_d: &mut i32,
-    ) -> Result<()> {
+    fn handle_events(&mut self, events: &[Event]) -> Result<()> {
         for event in events {
             match event.role() {
                 PeerRole::Server => {
-                    if let Err(e) = self.accept_new_client() {
-                        error!("Error accepting new client: {}", e);
+                    loop {
+                        match self.accept_new_client() {
+                            Ok(()) => continue,
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                debug!("Drained all pending connections");
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Error accepting new client: {}", e);
+                            }
+                        }
                     }
-                    let event_bitmask: i32 =
-                        EventType::Epollin as i32 | EventType::Epolloneshot as i32;
-                    let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
-                    self.epoll.modify_interest(self.as_raw_fd(), epoll_event)?;
+                    // if let Err(e) = self.accept_new_client() {
+                    //     error!("Error accepting new client: {}", e);
+                    // }
+                    // let event_bitmask: i32 =
+                    //     EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+                    // let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
+                    // self.epoll.modify_interest(self.as_raw_fd(), epoll_event)?;
                 }
                 PeerRole::Client(id) => {
                     let mut should_disconnect = None;
@@ -131,12 +135,10 @@ impl<H: EventHandler> EpollServer<H> {
                                 Event::new(bitmask as u32, PeerRole::Client(id))
                             };
                             self.epoll.modify_interest(stream_fd, epoll_event)?;
-                            *total_r += 1;
                         } else if event_type & write_event == write_event {
                             // Handle write
                             self.handle_message(id)?;
                             should_disconnect = Some(id);
-                            *total_w += 1;
                         } else {
                             debug!(
                                 "Disconnecting Client: id/fd({}), addr({}), event_type({:#x})",
@@ -150,7 +152,6 @@ impl<H: EventHandler> EpollServer<H> {
 
                     if let Some(id) = should_disconnect {
                         self.handle_disconnection(id)?;
-                        *total_d += 1;
                     }
                 }
             }
