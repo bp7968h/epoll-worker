@@ -62,20 +62,14 @@ impl<H: EventHandler> EpollServer<H> {
         let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
         self.epoll.add_interest(self.as_raw_fd(), epoll_event)?;
 
+        let mut notified_events = Vec::with_capacity(2048);
         while !self.shutdown_signal.load(Ordering::Relaxed) {
-            let mut notified_events = Vec::with_capacity(1024);
+            notified_events.clear();
             self.epoll.wait(&mut notified_events, timeout)?;
 
-            if notified_events.is_empty() {
-                continue;
+            if !notified_events.is_empty() {
+                self.handle_events(&notified_events)?;
             }
-
-            debug!(
-                "Now handling {} events received from epoll",
-                notified_events.len()
-            );
-
-            self.handle_events(&notified_events)?;
         }
         Ok(())
     }

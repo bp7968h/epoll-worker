@@ -19,8 +19,8 @@ impl ClientState {
     pub fn new(stream: TcpStream) -> Self {
         ClientState {
             stream,
-            read_buffer: Vec::with_capacity(1024),
-            write_queue: VecDeque::with_capacity(8),
+            read_buffer: Vec::with_capacity(16384),
+            write_queue: VecDeque::with_capacity(16),
             write_buffer: None,
             write_offset: 0,
             current_interests: 0,
