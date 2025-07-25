@@ -107,61 +107,127 @@ impl<H: EventHandler> EpollServer<H> {
                     }
                 },
                 PeerRole::Client(id) => {
-                    let mut should_disconnect = None;
                     let event_type = event.event_type() as i32;
                     let read_event = EventType::Epollin as i32;
                     let write_event = EventType::Epollout as i32;
-                    let oneshot_event = EventType::Epolloneshot as i32;
                     if let Some(client) = self.clients.get_mut(&id) {
-                        let stream_fd = client.as_raw_fd();
-                        if event_type & read_event == read_event {
-                            // Handle read
-                            match Self::handle_read(client) {
-                                Ok(bytes_read) => {
-                                    if bytes_read == 0 {
-                                        should_disconnect = Some(id);
-                                    } else if self.handler.is_data_complete(client.read_buf()) {
-                                        // Data complete: wait for fd to be writable
-                                        let bitmask = write_event | oneshot_event;
-                                        let epoll_event =
-                                            Event::new(bitmask as u32, PeerRole::Client(id));
+                        let mut should_disconnect = false;
+                        let mut need_interest_update = false;
 
-                                        self.epoll.modify_interest(stream_fd, epoll_event)?;
-                                    } else {
-                                        // Data incomplete: wait for more data to be read
-                                        let bitmask = read_event | oneshot_event;
-                                        let epoll_event =
-                                            Event::new(bitmask as u32, PeerRole::Client(id));
-                                        self.epoll.modify_interest(stream_fd, epoll_event)?;
+                        if event_type & read_event == read_event {
+                            match Self::handle_read(client) {
+                                Ok(()) => {
+                                    if self.handler.is_data_complete(client.read_buf()) {
+                                        match self.handler.on_message(id, client.read_buf()) {
+                                            Ok(action) => {
+                                                client.read_buf_mut().clear();
+                                                self.handle_action(id, action)?;
+                                            }
+                                            Err(e) => {
+                                                error!(
+                                                    "Handler `on_message` error for client {}: {}",
+                                                    id, e
+                                                );
+                                                should_disconnect = true;
+                                            }
+                                        }
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Read error for client {}: {}", id, e);
-                                    should_disconnect = Some(id);
+                                Err(_) => should_disconnect = true,
+                            }
+                        }
+
+                        if event_type & write_event == write_event {
+                            if let Some(client) = self.clients.get_mut(&id) {
+                                match client.flush_writes() {
+                                    Ok(true) => {
+                                        // All data written, remove write interest
+                                        need_interest_update = true;
+                                    }
+                                    Ok(false) => {
+                                        // More data to write, keep write interest
+                                    }
+                                    Err(_) => should_disconnect = true,
                                 }
                             }
-                            // validate if we received all the data
-                        } else if event_type & write_event == write_event {
-                            // Handle write
-                            self.handle_message(id)?;
-                            should_disconnect = Some(id);
-                        } else {
-                            debug!(
-                                "Disconnecting Client: id/fd({}), addr({}), event_type({:#x})",
-                                id,
-                                client.local_addr().unwrap(),
-                                event_type,
-                            );
-                            should_disconnect = Some(id);
                         }
-                    }
 
-                    if let Some(id) = should_disconnect {
-                        self.handle_disconnection(id)?;
+                        if need_interest_update && !should_disconnect {
+                            self.update_client_interests(id)?;
+                        }
+
+                        if should_disconnect {
+                            self.handle_disconnection(id)?;
+                        }
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    fn handle_action(&mut self, originating_client_id: u64, action: HandlerAction) -> Result<()> {
+        match action {
+            HandlerAction::Reply(data) => {
+                if let Some(client) = self.clients.get_mut(&originating_client_id) {
+                    client.queue_write(data);
+                    self.update_client_interests(originating_client_id)?;
+                }
+            }
+            HandlerAction::Broadcast(data) => {
+                // Send to all clients except the sender
+                let client_ids: Vec<u64> = self.clients.keys().copied().collect();
+                for client_id in client_ids {
+                    if client_id != originating_client_id {
+                        if let Some(client) = self.clients.get_mut(&client_id) {
+                            client.queue_write(data.clone());
+                            self.update_client_interests(client_id)?;
+                        }
+                    }
+                }
+            }
+            HandlerAction::SendTo {
+                target_client_id,
+                data,
+            } => {
+                if let Some(client) = self.clients.get_mut(&(target_client_id as u64)) {
+                    client.queue_write(data);
+                    self.update_client_interests(target_client_id as u64)?;
+                }
+            }
+            HandlerAction::SendToAll(data) => {
+                // Send to all clients including sender
+                let client_ids: Vec<u64> = self.clients.keys().copied().collect();
+                for client_id in client_ids {
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.queue_write(data.clone());
+                        self.update_client_interests(client_id)?;
+                    }
+                }
+            }
+            HandlerAction::None => (),
+        }
+        Ok(())
+    }
+
+    fn update_client_interests(&mut self, client_id: u64) -> Result<()> {
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            let fd = client.as_raw_fd();
+
+            let mut new_interests = EventType::Epollin as i32 | EventType::Epollet as i32;
+
+            if client.has_pending_writes() {
+                new_interests |= EventType::Epollout as i32;
+            }
+
+            let new_interests = new_interests as u32;
+            if client.current_interests() != new_interests {
+                let epoll_event = Event::new(new_interests, PeerRole::Client(client_id));
+                self.epoll.modify_interest(fd, epoll_event)?;
+                client.set_current_interests(new_interests);
+            }
+        }
+
         Ok(())
     }
 
@@ -225,48 +291,6 @@ impl<H: EventHandler> EpollServer<H> {
             }
         }
         Ok(total_read)
-    }
-
-    fn handle_message(&mut self, client_id: u64) -> Result<()> {
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            let mut action: Option<HandlerAction> = None;
-            if !client.read_buf().is_empty() {
-                match self.handler.on_message(client_id, client.read_buf()) {
-                    Ok(returned_action) => {
-                        action = Some(returned_action);
-                        client.read_buf_mut().clear();
-                    }
-                    Err(e) => {
-                        error!("Handler on_message error for client {}: {}", client_id, e);
-                        return Err(e);
-                    }
-                }
-            }
-
-            // Process handler action
-            if let Some(action_to_handle) = action {
-                match action_to_handle {
-                    HandlerAction::Broadcast(data) => {}
-                    HandlerAction::Reply(data) => {
-                        let written_bytes = client.write(&data)?;
-                        debug!(
-                            "Sent {} bytes Client Id: {} at Client Address: {}",
-                            written_bytes,
-                            client_id,
-                            client.local_addr().unwrap()
-                        );
-                        client.shutdown()?;
-                    }
-                    HandlerAction::SendTo {
-                        target_client_id,
-                        data,
-                    } => {}
-                    HandlerAction::SendToAll(data) => {}
-                    HandlerAction::None => (),
-                }
-            }
-        }
-        Ok(())
     }
 
     fn handle_disconnection(&mut self, id: u64) -> Result<()> {
