@@ -42,7 +42,7 @@ impl From<PeerRole> for u64 {
 ///     ADD = EPOLL_CTL_ADD
 ///     DEL = EPOLL_CTL_DEL
 ///     MOD = EPOLL_CTL_MOD
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operation {
     /// Add entry to the interest list of the epoll instance
     Add,
@@ -192,7 +192,12 @@ impl Epoll {
 
     /// Remove event from interest list
     pub fn remove_interest(&self, fd: RawFd) -> Result<()> {
-        self.control_interest(Operation::Del, fd, None)
+        self.control_interest(Operation::Del, fd, None)?;
+
+        if let Err(e) = ep_syscall!(close(fd)) {
+            error!("Failed to close epoll fd {}: {}", fd, e);
+        }
+        Ok(())
     }
 
     fn control_interest(&self, op: Operation, fd: RawFd, event: Option<&mut Event>) -> Result<()> {

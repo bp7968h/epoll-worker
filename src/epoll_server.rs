@@ -66,6 +66,8 @@ impl<H: EventHandler> EpollServer<H> {
             let mut notified_events = Vec::with_capacity(1024);
             self.epoll.wait(&mut notified_events, timeout)?;
 
+            println!("Total Clients: {:?}", self.clients.len());
+
             if notified_events.is_empty() {
                 continue;
             }
@@ -92,27 +94,18 @@ impl<H: EventHandler> EpollServer<H> {
     fn handle_events(&mut self, events: &[Event]) -> Result<()> {
         for event in events {
             match event.role() {
-                PeerRole::Server => {
-                    loop {
-                        match self.accept_new_client() {
-                            Ok(()) => continue,
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                debug!("Drained all pending connections");
-                                break;
-                            }
-                            Err(e) => {
-                                error!("Error accepting new client: {}", e);
-                            }
+                PeerRole::Server => loop {
+                    match self.accept_new_client() {
+                        Ok(()) => continue,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                            debug!("Drained all pending connections");
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Error accepting new client: {}", e);
                         }
                     }
-                    // if let Err(e) = self.accept_new_client() {
-                    //     error!("Error accepting new client: {}", e);
-                    // }
-                    // let event_bitmask: i32 =
-                    //     EventType::Epollin as i32 | EventType::Epolloneshot as i32;
-                    // let epoll_event = Event::new(event_bitmask as u32, PeerRole::Server);
-                    // self.epoll.modify_interest(self.as_raw_fd(), epoll_event)?;
-                }
+                },
                 PeerRole::Client(id) => {
                     let mut should_disconnect = None;
                     let event_type = event.event_type() as i32;
@@ -123,18 +116,31 @@ impl<H: EventHandler> EpollServer<H> {
                         let stream_fd = client.as_raw_fd();
                         if event_type & read_event == read_event {
                             // Handle read
-                            Self::handle_read(client)?;
+                            match Self::handle_read(client) {
+                                Ok(bytes_read) => {
+                                    if bytes_read == 0 {
+                                        should_disconnect = Some(id);
+                                    } else if self.handler.is_data_complete(client.read_buf()) {
+                                        // Data complete: wait for fd to be writable
+                                        let bitmask = write_event | oneshot_event;
+                                        let epoll_event =
+                                            Event::new(bitmask as u32, PeerRole::Client(id));
+
+                                        self.epoll.modify_interest(stream_fd, epoll_event)?;
+                                    } else {
+                                        // Data incomplete: wait for more data to be read
+                                        let bitmask = read_event | oneshot_event;
+                                        let epoll_event =
+                                            Event::new(bitmask as u32, PeerRole::Client(id));
+                                        self.epoll.modify_interest(stream_fd, epoll_event)?;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Read error for client {}: {}", id, e);
+                                    should_disconnect = Some(id);
+                                }
+                            }
                             // validate if we received all the data
-                            let epoll_event = if self.handler.is_data_complete(client.read_buf()) {
-                                // Data complete: wait for fd to be writable
-                                let bitmask = write_event | oneshot_event;
-                                Event::new(bitmask as u32, PeerRole::Client(id))
-                            } else {
-                                // Data incomplete: wait for more data to be read
-                                let bitmask = read_event | oneshot_event;
-                                Event::new(bitmask as u32, PeerRole::Client(id))
-                            };
-                            self.epoll.modify_interest(stream_fd, epoll_event)?;
                         } else if event_type & write_event == write_event {
                             // Handle write
                             self.handle_message(id)?;
@@ -192,14 +198,14 @@ impl<H: EventHandler> EpollServer<H> {
     /// Handles data reading from file TcpStream
     ///
     /// Read until we exhaust the kernel buffer or we get all the bytes
-    fn handle_read(client_state: &mut ClientState) -> Result<()> {
+    fn handle_read(client_state: &mut ClientState) -> Result<usize> {
         let mut buffer = vec![0u8; 4096];
         let mut total_read = 0;
         loop {
             match client_state.stream_mut().read(&mut buffer) {
                 Ok(0) => {
                     debug!("Client closed connection or no more data to read");
-                    break;
+                    return Ok(0);
                 }
                 Ok(n) => {
                     debug!("Read {} bytes", n);
@@ -214,15 +220,11 @@ impl<H: EventHandler> EpollServer<H> {
                     break;
                 }
                 Err(e) => {
-                    error!("Read error: {}", e);
                     return Err(e);
                 }
             }
         }
-        client_state
-            .read_buf_mut()
-            .extend_from_slice(&buffer[..total_read]);
-        Ok(())
+        Ok(total_read)
     }
 
     fn handle_message(&mut self, client_id: u64) -> Result<()> {
