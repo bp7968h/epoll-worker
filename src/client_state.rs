@@ -20,7 +20,7 @@ impl ClientState {
         ClientState {
             stream,
             read_buffer: Vec::with_capacity(1024),
-            write_queue: VecDeque::new(),
+            write_queue: VecDeque::with_capacity(8),
             write_buffer: None,
             write_offset: 0,
             current_interests: 0,

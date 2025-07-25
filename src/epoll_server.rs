@@ -66,8 +66,6 @@ impl<H: EventHandler> EpollServer<H> {
             let mut notified_events = Vec::with_capacity(1024);
             self.epoll.wait(&mut notified_events, timeout)?;
 
-            println!("Total Clients: {:?}", self.clients.len());
-
             if notified_events.is_empty() {
                 continue;
             }
@@ -116,23 +114,26 @@ impl<H: EventHandler> EpollServer<H> {
 
                         if event_type & read_event == read_event {
                             match Self::handle_read(client) {
-                                Ok(()) => {
-                                    if self.handler.is_data_complete(client.read_buf()) {
-                                        match self.handler.on_message(id, client.read_buf()) {
-                                            Ok(action) => {
-                                                client.read_buf_mut().clear();
-                                                self.handle_action(id, action)?;
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "Handler `on_message` error for client {}: {}",
-                                                    id, e
-                                                );
-                                                should_disconnect = true;
+                                Ok(bytes_read) => match bytes_read {
+                                    0 => should_disconnect = true,
+                                    _ => {
+                                        if self.handler.is_data_complete(client.read_buf()) {
+                                            match self.handler.on_message(id, client.read_buf()) {
+                                                Ok(action) => {
+                                                    client.read_buf_mut().clear();
+                                                    self.handle_action(id, action)?;
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        "Handler `on_message` error for client {}: {}",
+                                                        id, e
+                                                    );
+                                                    should_disconnect = true;
+                                                }
                                             }
                                         }
                                     }
-                                }
+                                },
                                 Err(_) => should_disconnect = true,
                             }
                         }
@@ -252,7 +253,7 @@ impl<H: EventHandler> EpollServer<H> {
             );
         }
 
-        let bitmask: i32 = EventType::Epollin as i32 | EventType::Epolloneshot as i32;
+        let bitmask: i32 = EventType::Epollin as i32 | EventType::Epollet as i32;
         let epoll_event = Event::new(bitmask as u32, PeerRole::Client(identifier));
         self.epoll.add_interest(socket_fd, epoll_event)?;
 
@@ -299,7 +300,6 @@ impl<H: EventHandler> EpollServer<H> {
             self.epoll.remove_interest(fd)?;
 
             self.handler.on_disconnect(id)?;
-            info!("Client disconnected addr({})", id,);
         }
 
         Ok(())

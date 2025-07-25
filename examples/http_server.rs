@@ -42,16 +42,10 @@ impl EventHandler for HttpHandler {
         client_id: u64,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
-        info!(
-            "Client {} connected from {}",
-            client_id,
-            stream.local_addr()?
-        );
         Ok(())
     }
 
     fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
-        info!("Client {} disconnected", client_id);
         Ok(())
     }
 
@@ -78,7 +72,6 @@ impl EventHandler for HttpHandler {
 
     fn is_data_complete(&mut self, data: &[u8]) -> bool {
         let data_str = String::from_utf8_lossy(data);
-        debug!("Received: {}", data_str);
         let mut lines = data_str.lines();
         if let Some(line) = lines.next() {
             if let Some(method) = line.split(" ").nth(0) {
@@ -96,7 +89,6 @@ impl EventHandler for HttpHandler {
                     > len
                         .parse::<usize>()
                         .expect("content-length to be valid number");
-                debug!("Content-Length Validate: {}/{}", is_valid, len);
                 return is_valid;
             }
         }
