@@ -17,11 +17,14 @@ use crate::{
     handler::{EventHandler, HandlerAction},
 };
 
+/// Represents the client id
+pub type ClientId = u64;
+
 /// Server instance that listens for request
 pub struct EpollServer<H> {
     listener: TcpListener,
     epoll: Epoll,
-    clients: HashMap<u64, ClientState>,
+    clients: HashMap<ClientId, ClientState>,
     shutdown_signal: Arc<AtomicBool>,
     handler: H,
 }
@@ -161,7 +164,11 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn handle_action(&mut self, originating_client_id: u64, action: HandlerAction) -> Result<()> {
+    fn handle_action(
+        &mut self,
+        originating_client_id: ClientId,
+        action: HandlerAction,
+    ) -> Result<()> {
         match action {
             HandlerAction::Reply(data) => {
                 if let Some(client) = self.clients.get_mut(&originating_client_id) {
@@ -205,7 +212,7 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(())
     }
 
-    fn update_client_interests(&mut self, client_id: u64) -> Result<()> {
+    fn update_client_interests(&mut self, client_id: ClientId) -> Result<()> {
         if let Some(client) = self.clients.get_mut(&client_id) {
             let fd = client.as_raw_fd();
 
@@ -288,7 +295,7 @@ impl<H: EventHandler> EpollServer<H> {
         Ok(total_read)
     }
 
-    fn handle_disconnection(&mut self, id: u64) -> Result<()> {
+    fn handle_disconnection(&mut self, id: ClientId) -> Result<()> {
         if let Some(client_socket) = self.clients.remove(&id) {
             let fd = client_socket.as_raw_fd();
             self.epoll.remove_interest(fd)?;

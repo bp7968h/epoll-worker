@@ -12,7 +12,7 @@ unsafe extern "C" {
     ///
     /// The file descriptor of the epoll instance or `-1` if there is any error
     /// and the error is set to `errno` which is basically the `last_os_error`
-    pub fn epoll_create1(size: i32) -> i32;
+    pub(crate) fn epoll_create1(size: i32) -> i32;
 
     /// Closes a file descriptor
     ///
@@ -22,7 +22,7 @@ unsafe extern "C" {
     /// # Returns
     ///
     /// `0` on success and `-1` on error
-    pub fn close(fd: i32) -> i32;
+    pub(crate) fn close(fd: i32) -> i32;
 
     /// Add, modify or remove entries in interest list of epoll instance
     ///
@@ -32,7 +32,7 @@ unsafe extern "C" {
     /// * `op` - operation to be performed for target file descriptor
     /// * `fd` - target file descriptor
     /// * `event` -
-    pub fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut Event) -> i32;
+    pub(crate) fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut Event) -> i32;
 
     /// Wait for events on epoll instance
     ///
@@ -42,7 +42,7 @@ unsafe extern "C" {
     /// * `events` - buffer to fill the returned events notification
     /// * `max_events` - number of max events to be filled, must be greater than zero
     /// * `timeouot` - number of milliseconds that `epoll_wait` will block
-    pub fn epoll_wait(epfd: i32, events: *mut Event, max_events: i32, timeout: i32) -> i32;
+    pub(crate) fn epoll_wait(epfd: i32, events: *mut Event, max_events: i32, timeout: i32) -> i32;
 
     /// Performs operation on open file descriptor
     ///
@@ -53,5 +53,5 @@ unsafe extern "C" {
     ///
     ///     F_GETFD - returns the file descriptor flags
     ///               value of F_GETFD is 1
-    pub fn fcntl(fd: i32, op: i32, ...) -> i32;
+    pub(crate) fn fcntl(fd: i32, op: i32, ...) -> i32;
 }

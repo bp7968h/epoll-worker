@@ -6,7 +6,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct ClientState {
+pub(crate) struct ClientState {
     stream: TcpStream,
     read_buffer: Vec<u8>,
     write_queue: VecDeque<Vec<u8>>,

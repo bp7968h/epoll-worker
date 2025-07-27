@@ -7,7 +7,7 @@ mod handler;
 
 mod client_state;
 
-pub use epoll_server::EpollServer;
+pub use epoll_server::{ClientId, EpollServer};
 pub use handler::{EventHandler, HandlerAction};
 
 /// This is a helper macro to do syscall
@@ -23,7 +23,6 @@ pub use handler::{EventHandler, HandlerAction};
 ///
 /// Note: In a function call trailing comman in arguments is ignored
 /// if atleast one argument is present by Rust
-#[macro_export]
 macro_rules! ep_syscall {
     ($epoll_fn:ident ( $($arg:expr),* )) => {{
 
@@ -41,3 +40,5 @@ macro_rules! ep_syscall {
         }
     }};
 }
+
+pub(crate) use ep_syscall;

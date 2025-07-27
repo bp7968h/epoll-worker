@@ -43,7 +43,7 @@ impl From<PeerRole> for u64 {
 ///     DEL = EPOLL_CTL_DEL
 ///     MOD = EPOLL_CTL_MOD
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Operation {
+pub(crate) enum Operation {
     /// Add entry to the interest list of the epoll instance
     Add,
     /// Remove the target file descriptor from the interest list
@@ -68,7 +68,7 @@ impl From<Operation> for i32 {
 /// These variants are used to bitmask the `event` filed in `Event`
 #[allow(dead_code)]
 #[repr(i32)]
-pub enum EventType {
+pub(crate) enum EventType {
     /// Read operation
     Epollin = 0x1,
     /// Write operation
@@ -94,7 +94,7 @@ pub enum EventType {
 /// data means user data/identifier
 #[derive(Debug)]
 #[repr(C, packed(1))]
-pub struct Event {
+pub(crate) struct Event {
     /// bit mask composed by ORing together zero or more event types
     /// returned by `epoll_wait`, and input flags which affect its behaviour
     events: u32,
@@ -133,7 +133,7 @@ impl Event {
 /// adding interest to epoll instance,
 /// modifyinf interest to epoll instance,
 /// deleting insterest from epoll instance
-pub struct Epoll {
+pub(crate) struct Epoll {
     epfd: RawFd,
 }
 
