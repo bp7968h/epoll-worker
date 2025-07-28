@@ -97,12 +97,4 @@ impl ClientState {
     pub fn as_raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
-
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.stream.local_addr()
-    }
-
-    pub fn shutdown(&mut self) -> Result<()> {
-        self.stream.shutdown(Shutdown::Both)
-    }
 }
