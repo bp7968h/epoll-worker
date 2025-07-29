@@ -3,7 +3,7 @@
 //! Usage: RUST_LOG=info cargo run --example http_server
 //! Test with: curl http://localhost:8080
 
-use epoll_worker::{EpollServer, EventHandler, HandlerAction};
+use epoll_worker::{ClientId, EpollServer, EventHandler, HandlerAction};
 use log::{debug, info};
 
 const HTML_200: &'static str = r#"
@@ -39,17 +39,17 @@ struct HttpHandler;
 impl EventHandler for HttpHandler {
     fn on_connection(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
+    fn on_disconnect(&mut self, client_id: ClientId) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn on_message(&mut self, _client_id: u64, data: &[u8]) -> std::io::Result<HandlerAction> {
+    fn on_message(&mut self, _client_id: ClientId, data: &[u8]) -> std::io::Result<HandlerAction> {
         let request = String::from_utf8_lossy(data);
         let (status_line, contents) = match request.lines().next() {
             Some(first_line) => {

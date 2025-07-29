@@ -4,7 +4,7 @@
 //! Connect with: <telnet localhost 8080> or <client provided in example>
 
 use env_logger;
-use epoll_worker::{EpollServer, EventHandler, HandlerAction};
+use epoll_worker::{ClientId, EpollServer, EventHandler, HandlerAction};
 use log::info;
 
 struct BroadcastHandler;
@@ -12,7 +12,7 @@ struct BroadcastHandler;
 impl EventHandler for BroadcastHandler {
     fn on_connection(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
         info!(
@@ -23,12 +23,12 @@ impl EventHandler for BroadcastHandler {
         Ok(())
     }
 
-    fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
+    fn on_disconnect(&mut self, client_id: ClientId) -> std::io::Result<()> {
         info!("Client {} disconnected", client_id);
         Ok(())
     }
 
-    fn on_message(&mut self, client_id: u64, data: &[u8]) -> std::io::Result<HandlerAction> {
+    fn on_message(&mut self, client_id: ClientId, data: &[u8]) -> std::io::Result<HandlerAction> {
         let message = format!("[Client_{}] {}", client_id, String::from_utf8_lossy(data));
         Ok(HandlerAction::Broadcast(message.into_bytes()))
     }

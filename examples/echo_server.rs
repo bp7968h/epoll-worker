@@ -2,7 +2,7 @@
 //!
 //! Usage: RUST_LOG=info cargo run --example echo_server
 
-use epoll_worker::{EpollServer, EventHandler, HandlerAction};
+use epoll_worker::{ClientId, EpollServer, EventHandler, HandlerAction};
 use log::info;
 
 struct EchoHandler;
@@ -10,7 +10,7 @@ struct EchoHandler;
 impl EventHandler for EchoHandler {
     fn on_connection(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         stream: &std::net::TcpStream,
     ) -> std::io::Result<()> {
         info!(
@@ -21,14 +21,14 @@ impl EventHandler for EchoHandler {
         Ok(())
     }
 
-    fn on_disconnect(&mut self, client_id: u64) -> std::io::Result<()> {
+    fn on_disconnect(&mut self, client_id: ClientId) -> std::io::Result<()> {
         info!("Client {} disconnected", client_id);
         Ok(())
     }
 
     fn on_message(
         &mut self,
-        _client_id: u64,
+        _client_id: ClientId,
         data: &[u8],
     ) -> std::io::Result<epoll_worker::HandlerAction> {
         Ok(HandlerAction::Reply(data.to_vec()))
